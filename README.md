@@ -79,8 +79,8 @@ model.
 ## Integrations
 
 PowerContext provides official integrations and installation guides for Codex, Claude Code, DeepSeek Harness, Hermes
-Agent, and Pi Coding Agent. These integrations use the same scoped data and history-preserving contracts through
-PowerContext Server; the host integrations do not start or embed the Server.
+Agent, Pi Coding Agent, and OpenCode. These integrations use the same scoped data and history-preserving contracts
+through PowerContext Server; the host integrations do not start or embed the Server.
 
 ### Official integrations
 
@@ -91,6 +91,7 @@ PowerContext Server; the host integrations do not start or embed the Server.
 <td align="center" width="120"><img src="https://github.com/deepseek-ai.png?size=120" alt="DeepSeek Harness" width="48" height="48" /><br /><sub><b>DeepSeek Harness</b></sub></td>
 <td align="center" width="120"><a href="integrations/hermes/README.md"><img src="https://github.com/NousResearch/hermes-agent/blob/main/website/static/img/logo.png?raw=true&size=120" alt="Hermes Agent" width="48" height="48" /><br /><sub><b>Hermes Agent</b></sub></a></td>
 <td align="center" width="120"><a href="docs/en/docs/how-to/configure-pi.md"><img src="https://github.com/earendil-works.png?size=120" alt="Pi Coding Agent" width="48" height="48" /><br /><sub><b>Pi Coding Agent</b></sub></a></td>
+<td align="center" width="120"><a href="docs/en/docs/how-to/configure-opencode.md"><img src="https://github.com/anomalyco.png?size=120" alt="OpenCode" width="48" height="48" /><br /><sub><b>OpenCode</b></sub></a></td>
 </tr>
 </table>
 
