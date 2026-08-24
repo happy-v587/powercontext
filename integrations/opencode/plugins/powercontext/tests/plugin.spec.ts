@@ -143,12 +143,40 @@ describe('PowerContextPlugin', () => {
     incoming.parts[0]!.text = '"multi word prompt"'
 
     await hooks['chat.message']?.(
-      { sessionID: 'session-1', messageID: 'msg-1' },
+      { sessionID: 'session-1' },
       { message: incoming.info, parts: incoming.parts } as any,
     )
 
     expect(calls[0]?.body.query).toBe('multi word prompt')
     expect(calls[1]?.body.content).toBe('multi word prompt')
+  })
+
+  it('preserves intentional outer quotes in an already-decoded chat message', async () => {
+    process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
+    const calls: Array<{ url: string; body: any }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) })
+      if (url.endsWith('/v1/context/prepare')) {
+        return Response.json({
+          schema: 'powercontext.prepared-context.v1',
+          status: 'empty',
+          content: null,
+          content_bytes: 0,
+        })
+      }
+      return Response.json({ position: 7 }, { status: 202 })
+    }))
+    const hooks = await PowerContextPlugin(pluginInput())
+    const incoming = userMessage()
+    incoming.parts[0]!.text = '"preserve these quotes"'
+
+    await hooks['chat.message']?.(
+      { sessionID: 'session-1', messageID: 'msg-1' },
+      { message: incoming.info, parts: incoming.parts } as any,
+    )
+
+    expect(calls[0]?.body.query).toBe('"preserve these quotes"')
+    expect(calls[1]?.body.content).toBe('"preserve these quotes"')
   })
 
   it('asks before a durable tool operation', async () => {

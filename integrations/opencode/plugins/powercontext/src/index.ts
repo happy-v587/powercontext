@@ -60,16 +60,17 @@ interface Runtime {
   log: (event: Record<string, unknown>) => Promise<void>
 }
 
-function promptText(parts: readonly MessagePart[]): string {
+function promptText(parts: readonly MessagePart[], transportEncoded: boolean): string {
   return parts
     .filter((part) => part.type === 'text' && !part.synthetic && typeof part.text === 'string')
-    .map((part) => normalizePromptPart(part.text!))
+    .map((part) => normalizePromptPart(part.text!, transportEncoded))
     .filter((value): value is string => Boolean(value))
     .join('\n\n')
 }
 
-function normalizePromptPart(value: string): string {
+function normalizePromptPart(value: string, transportEncoded: boolean): string {
   const text = value.trim()
+  if (!transportEncoded) return text
   if (!text.startsWith('"') || !text.endsWith('"')) return text
   try {
     const decoded: unknown = JSON.parse(text)
@@ -429,7 +430,7 @@ export const PowerContextPlugin: Plugin = async (input) => {
     tool: createTools(runtime),
     'chat.message': async (event, output) => {
       const messageID = event.messageID ?? output.message.id
-      const prompt = promptText(output.parts as MessagePart[])
+      const prompt = promptText(output.parts as MessagePart[], event.messageID === undefined)
       if (!messageID || !prompt) {
         if (messageID) setTurn(runtime, event.sessionID, { messageID })
         return
