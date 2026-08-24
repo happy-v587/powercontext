@@ -14,6 +14,11 @@
  * limitations under the License.
  */
 
+import { randomUUID } from 'node:crypto'
+import { readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PowerContextPlugin } from '../src/index.ts'
 
@@ -23,6 +28,8 @@ const ENV_KEYS = [
   'POWERCONTEXT_OPENCODE_AUTHORIZATION',
   'POWERCONTEXT_OPENCODE_CAPTURE_PROMPTS',
   'POWERCONTEXT_OPENCODE_FLUSH_ON_CAPTURE',
+  'POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH',
+  'POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE',
 ] as const
 
 function pluginInput() {
@@ -49,6 +56,19 @@ afterEach(() => {
 })
 
 describe('PowerContextPlugin', () => {
+  it('signals successful activation with the doctor nonce', async () => {
+    const path = join(tmpdir(), `powercontext-opencode-${randomUUID()}`)
+    process.env.POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH = path
+    process.env.POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE = 'expected-nonce'
+    try {
+      const hooks = await PowerContextPlugin(pluginInput())
+      expect(hooks.tool?.pc_remember).toBeDefined()
+      expect(await readFile(path, 'utf8')).toBe('expected-nonce')
+    } finally {
+      await rm(path, { force: true })
+    }
+  })
+
   it('recalls, captures, and injects context once without persisting it through chat.message', async () => {
     process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
     const calls: Array<{ url: string; body: any }> = []
@@ -101,6 +121,34 @@ describe('PowerContextPlugin', () => {
     )).resolves.toBeUndefined()
     await hooks['experimental.chat.messages.transform']?.({}, { messages: [incoming] } as any)
     expect(incoming.parts).toHaveLength(1)
+  })
+
+  it('normalizes the JSON string representation emitted by opencode run', async () => {
+    process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
+    const calls: Array<{ url: string; body: any }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) })
+      if (url.endsWith('/v1/context/prepare')) {
+        return Response.json({
+          schema: 'powercontext.prepared-context.v1',
+          status: 'empty',
+          content: null,
+          content_bytes: 0,
+        })
+      }
+      return Response.json({ position: 7 }, { status: 202 })
+    }))
+    const hooks = await PowerContextPlugin(pluginInput())
+    const incoming = userMessage()
+    incoming.parts[0]!.text = '"multi word prompt"'
+
+    await hooks['chat.message']?.(
+      { sessionID: 'session-1', messageID: 'msg-1' },
+      { message: incoming.info, parts: incoming.parts } as any,
+    )
+
+    expect(calls[0]?.body.query).toBe('multi word prompt')
+    expect(calls[1]?.body.content).toBe('multi word prompt')
   })
 
   it('asks before a durable tool operation', async () => {

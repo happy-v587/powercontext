@@ -15,6 +15,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { writeFile } from 'node:fs/promises'
 import { type Plugin, type PluginInput, type PluginModule, tool } from '@opencode-ai/plugin'
 import { PowerContextClient, createTimeoutSignal } from './client.ts'
 import { resolveConfig, type ResolvedConfig } from './config.ts'
@@ -62,9 +63,31 @@ interface Runtime {
 function promptText(parts: readonly MessagePart[]): string {
   return parts
     .filter((part) => part.type === 'text' && !part.synthetic && typeof part.text === 'string')
-    .map((part) => part.text?.trim())
+    .map((part) => normalizePromptPart(part.text!))
     .filter((value): value is string => Boolean(value))
     .join('\n\n')
+}
+
+function normalizePromptPart(value: string): string {
+  const text = value.trim()
+  if (!text.startsWith('"') || !text.endsWith('"')) return text
+  try {
+    const decoded: unknown = JSON.parse(text)
+    return typeof decoded === 'string' ? decoded.trim() : text
+  } catch {
+    return text
+  }
+}
+
+async function signalActivationProbe(runtime: Runtime): Promise<void> {
+  const path = process.env.POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH?.trim()
+  const nonce = process.env.POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE?.trim()
+  if (!path || !nonce) return
+  try {
+    await writeFile(path, nonce, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+  } catch {
+    await runtime.log({ event: 'activation_probe', outcome: 'failed' })
+  }
 }
 
 function setTurn(runtime: Runtime, sessionID: string, turn: CachedTurn): void {
@@ -402,7 +425,7 @@ export const PowerContextPlugin: Plugin = async (input) => {
     return {}
   }
 
-  return {
+  const hooks: Awaited<ReturnType<Plugin>> = {
     tool: createTools(runtime),
     'chat.message': async (event, output) => {
       const messageID = event.messageID ?? output.message.id
@@ -438,6 +461,8 @@ export const PowerContextPlugin: Plugin = async (input) => {
       if (sessionID) runtime.turns.delete(sessionID)
     },
   }
+  await signalActivationProbe(runtime)
+  return hooks
 }
 
 const plugin = { id: PLUGIN_NAME, server: PowerContextPlugin } satisfies PluginModule

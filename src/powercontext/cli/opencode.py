@@ -16,11 +16,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +30,7 @@ from shutil import which
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from powercontext.cli.git_source import InvalidGitHubSourceError, clone_github_source
+from powercontext.cli.git_source import InvalidGitHubSourceError, clone_github_source, github_clone_url
 from powercontext.cli.git_source import is_local_source as _is_local_source
 from powercontext.cli.system import Diagnostic, DiagnosticStatus, SetupError
 from powercontext.paths import powercontext_data_dir
@@ -40,6 +42,9 @@ OPENCODE_SKILL = Path("skills") / "project-context" / "SKILL.md"
 SKILL_MANIFEST = ".powercontext.json"
 MINIMUM_VERSION = (1, 18, 21)
 _VERSION = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)")
+_COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
+_ACTIVATION_PROBE_PATH = "POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"
+_ACTIVATION_PROBE_NONCE = "POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +122,19 @@ def require_complete_plugin(path: Path) -> None:
         raise SetupError.incomplete_opencode_plugin(path)
 
 
-def checkout_target(ref: str) -> Path:
+def checkout_target(source: str, ref: str, resolved_commit: str) -> Path:
     root = (powercontext_data_dir() / "checkouts" / "opencode").resolve()
     if not ref or ref in {".", ".."} or "\x00" in ref:
         raise SetupError.invalid_opencode_ref(ref)
-    target = (root / ref).resolve()
+    try:
+        normalized_source = _normalized_source_identity(source)
+    except InvalidGitHubSourceError:
+        raise SetupError.invalid_opencode_source() from None
+    if _COMMIT.fullmatch(resolved_commit) is None:
+        raise SetupError.git_clone_failed()
+    source_key = hashlib.sha256(normalized_source.encode()).hexdigest()[:16]
+    ref_key = hashlib.sha256(ref.encode()).hexdigest()[:16]
+    target = (root / source_key / ref_key / resolved_commit).resolve()
     try:
         target.relative_to(root)
     except ValueError as error:
@@ -195,17 +208,68 @@ def _is_opencode_plugin(path: Path) -> bool:
 
 
 def _materialize_remote_checkout(source: str, ref: str) -> Path:
-    target = checkout_target(ref)
-    if _is_opencode_plugin(target) or _is_opencode_plugin(target / OPENCODE_PLUGIN_RELATIVE):
-        return target
-    if target.exists():
-        shutil.rmtree(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if not ref or ref in {".", ".."} or "\x00" in ref:
+        raise SetupError.invalid_opencode_ref(ref)
     try:
-        clone_github_source(source, ref, target)
+        normalized_source = _normalized_source_identity(source)
     except InvalidGitHubSourceError:
         raise SetupError.invalid_opencode_source() from None
+    root = (powercontext_data_dir() / "checkouts" / "opencode").resolve()
+    source_key = hashlib.sha256(normalized_source.encode()).hexdigest()[:16]
+    ref_key = hashlib.sha256(ref.encode()).hexdigest()[:16]
+    staging_parent = root / source_key / ref_key
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".checkout-", dir=staging_parent))
+    try:
+        clone_github_source(source, ref, staging)
+        resolved_commit = _checkout_commit(staging)
+        target = checkout_target(source, ref, resolved_commit)
+        if _is_opencode_plugin(target) or _is_opencode_plugin(target / OPENCODE_PLUGIN_RELATIVE):
+            return target
+        _replace_checkout(staging, target)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
     return target
+
+
+def _normalized_source_identity(source: str) -> str:
+    clone_url = github_clone_url(source)
+    if clone_url.startswith("git@github.com:"):
+        repository = clone_url.removeprefix("git@github.com:")
+    else:
+        repository = urlparse(clone_url).path.lstrip("/")
+    return f"github.com/{repository.removesuffix('.git').casefold()}"
+
+
+def _checkout_commit(path: Path) -> str:
+    command = ["git", "-C", str(path), "rev-parse", "--verify", "HEAD"]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=10)  # noqa: S603
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SetupError.git_clone_failed() from error
+    commit = completed.stdout.strip().lower()
+    if completed.returncode != 0 or _COMMIT.fullmatch(commit) is None:
+        raise SetupError.git_clone_failed()
+    return commit
+
+
+def _replace_checkout(staging: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    backup = target.with_name(f".{target.name}.{uuid4().hex}.bak")
+    moved_old = False
+    try:
+        if target.exists():
+            os.replace(target, backup)
+            moved_old = True
+        os.replace(staging, target)
+    except BaseException:
+        if moved_old and not target.exists() and backup.exists():
+            os.replace(backup, target)
+        raise
+    finally:
+        if backup.exists() and target.exists():
+            shutil.rmtree(backup)
 
 
 def _configured_plugin(output: str) -> bool:
@@ -242,7 +306,8 @@ def run_opencode_diagnostics() -> dict[str, Diagnostic]:
         }
     try:
         config_dir = opencode_config_dir()
-        configured = _configured_plugin(_run_opencode("debug", "config"))
+        output, activated = _probe_plugin_activation()
+        configured = _configured_plugin(output)
     except SetupError as error:
         return {
             "opencode": Diagnostic(status=DiagnosticStatus.OK, detail=f"{executable} ({actual})"),
@@ -254,11 +319,15 @@ def run_opencode_diagnostics() -> dict[str, Diagnostic]:
     return {
         "opencode": Diagnostic(status=DiagnosticStatus.OK, detail=f"{executable} ({actual})"),
         "plugin": Diagnostic(
-            status=DiagnosticStatus.OK if configured else DiagnosticStatus.FAILED,
+            status=DiagnosticStatus.OK if configured and activated else DiagnosticStatus.FAILED,
             detail=(
-                f"{OPENCODE_PLUGIN_NAME} is configured"
-                if configured
-                else "PowerContext OpenCode plugin is not configured"
+                f"{OPENCODE_PLUGIN_NAME} is configured and active"
+                if configured and activated
+                else (
+                    "PowerContext OpenCode plugin is configured but did not activate"
+                    if configured
+                    else "PowerContext OpenCode plugin is not configured"
+                )
             ),
         ),
         "skill": Diagnostic(
@@ -268,7 +337,23 @@ def run_opencode_diagnostics() -> dict[str, Diagnostic]:
     }
 
 
-def _run_opencode(*arguments: str) -> str:
+def _probe_plugin_activation() -> tuple[str, bool]:
+    token = uuid4().hex
+    with tempfile.TemporaryDirectory(prefix="powercontext-opencode-probe-") as directory:
+        path = Path(directory) / "active"
+        output = _run_opencode(
+            "debug",
+            "config",
+            env={_ACTIVATION_PROBE_PATH: str(path), _ACTIVATION_PROBE_NONCE: token},
+        )
+        try:
+            activated = path.read_text(encoding="utf-8") == token
+        except OSError:
+            activated = False
+    return output, activated
+
+
+def _run_opencode(*arguments: str, env: dict[str, str] | None = None) -> str:
     command = [opencode_executable(), *arguments]
     try:
         completed = subprocess.run(  # noqa: S603 - arguments are passed directly to the fixed OpenCode executable.
@@ -279,6 +364,7 @@ def _run_opencode(*arguments: str) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=120,
+            env=None if env is None else os.environ | env,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SetupError.command_unavailable(command, error) from error

@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from powercontext.cli.app import create_cli
-from powercontext.cli.system import doctor_app, setup_app
+from powercontext.cli.system import SetupError, doctor_app, setup_app
 
 
 def _write_plugin(root: Path, *, built: bool = True) -> Path:
@@ -38,12 +39,17 @@ def _write_plugin(root: Path, *, built: bool = True) -> Path:
 
 
 def _fake_opencode(plugin: Path, config: Path):
-    def run(*arguments: str) -> str:
+    def run(*arguments: str, env: dict[str, str] | None = None) -> str:
         if arguments == ("--version",):
             return "1.18.21\n"
         if arguments == ("debug", "paths"):
             return f"config     {config}\n"
         if arguments == ("debug", "config"):
+            if env is not None:
+                Path(env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"]).write_text(
+                    env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"],
+                    encoding="utf-8",
+                )
             return json.dumps({"plugin": [plugin.as_uri()]})
         if arguments[0] == "plugin":
             return ""
@@ -69,6 +75,56 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     assert "PowerContext OpenCode setup complete." in result.output
     assert (skill / "SKILL.md").is_file()
     assert json.loads((skill / ".powercontext.json").read_text(encoding="utf-8"))["owner"] == "powercontext"
+
+
+def test_remote_checkout_cache_is_scoped_by_source_and_resolved_commit(tmp_path: Path, monkeypatch) -> None:
+    import powercontext.cli.opencode as opencode_cli
+
+    commits = iter(["a" * 40, "b" * 40, "a" * 40])
+
+    def clone(_source: str, _ref: str, target: Path) -> None:
+        _write_plugin(target)
+
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(opencode_cli, "clone_github_source", clone)
+    monkeypatch.setattr(opencode_cli, "_checkout_commit", lambda _target: next(commits), raising=False)
+
+    first = opencode_cli._materialize_remote_checkout("owner-a/repo", "master")
+    refreshed = opencode_cli._materialize_remote_checkout("owner-a/repo", "master")
+    other_source = opencode_cli._materialize_remote_checkout("owner-b/repo", "master")
+
+    assert first != refreshed
+    assert first != other_source
+    assert first.name == "a" * 40
+    assert refreshed.name == "b" * 40
+    assert other_source.name == "a" * 40
+    assert opencode_cli.checkout_target("owner-a/repo", "master", "a" * 40) == opencode_cli.checkout_target(
+        "git@github.com:OWNER-A/REPO.git", "master", "a" * 40
+    )
+
+
+def test_remote_checkout_refresh_failure_keeps_previous_commit(tmp_path: Path, monkeypatch) -> None:
+    import powercontext.cli.opencode as opencode_cli
+
+    attempts = 0
+
+    def clone(_source: str, _ref: str, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise SetupError.git_clone_failed()
+        _write_plugin(target)
+
+    monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(opencode_cli, "clone_github_source", clone)
+    monkeypatch.setattr(opencode_cli, "_checkout_commit", lambda _target: "a" * 40)
+
+    current = opencode_cli._materialize_remote_checkout("owner/repo", "master")
+    with pytest.raises(SetupError):
+        opencode_cli._materialize_remote_checkout("owner/repo", "master")
+
+    assert (current / "integrations" / "opencode" / "plugins" / "powercontext" / "package.json").is_file()
+    assert not list(current.parent.glob(".checkout-*"))
 
 
 def test_opencode_skill_refresh_replaces_only_an_owned_installation(tmp_path: Path) -> None:
@@ -155,3 +211,32 @@ def test_doctor_opencode_reports_plugin_and_skill(tmp_path: Path, monkeypatch) -
     payload = json.loads(result.output)
     assert payload["checks"]["plugin"]["status"] == "ok"
     assert payload["checks"]["skill"]["status"] == "ok"
+
+
+def test_doctor_opencode_rejects_configured_but_inactive_plugin(tmp_path: Path, monkeypatch) -> None:
+    import powercontext.cli.opencode as opencode_cli
+
+    plugin = _write_plugin(tmp_path / "checkout")
+    config = tmp_path / "config"
+    skill = config / "skills" / "project-context"
+    opencode_cli._install_skill(plugin / "skills" / "project-context", skill)
+    monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
+
+    def inactive(*arguments: str, env: dict[str, str] | None = None) -> str:
+        del env
+        if arguments == ("--version",):
+            return "1.18.21\n"
+        if arguments == ("debug", "paths"):
+            return f"config     {config}\n"
+        if arguments == ("debug", "config"):
+            return json.dumps({"plugin": [plugin.as_uri()]})
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(opencode_cli, "_run_opencode", inactive)
+
+    result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "opencode", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["checks"]["plugin"]["status"] == "failed"
+    assert "did not activate" in payload["checks"]["plugin"]["detail"]
