@@ -33,7 +33,7 @@ class _RecordingServer(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         payload = cast(dict[str, Any], json.loads(self.rfile.read(length)))
         server = cast(_RecordingServer, self.server)
@@ -57,7 +57,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib override name
         del format, args
         return
 
@@ -91,7 +91,7 @@ def test_opencode_run_normalizes_prompt_before_recall_and_capture(tmp_path: Path
             "POWERCONTEXT_OPENCODE_BASE_URL": f"http://127.0.0.1:{server.server_port}",
             "POWERCONTEXT_OPENCODE_SCOPE_ID": "project:test",
         })
-        process = subprocess.Popen(  # noqa: S603 - the resolved OpenCode executable and fixed arguments are intentional.
+        process = subprocess.Popen(
             [
                 executable,
                 "run",
@@ -124,7 +124,9 @@ def test_opencode_run_normalizes_prompt_before_recall_and_capture(tmp_path: Path
             except subprocess.TimeoutExpired:
                 process.kill()
                 stdout, stderr = process.communicate(timeout=5)
-        assert captured, f"OpenCode did not invoke the capture hook; stdout={stdout[-2000:]!r}, stderr={stderr[-2000:]!r}"
+        assert captured, (
+            f"OpenCode did not invoke the capture hook; stdout={stdout[-2000:]!r}, stderr={stderr[-2000:]!r}"
+        )
     finally:
         server.shutdown()
         server.server_close()

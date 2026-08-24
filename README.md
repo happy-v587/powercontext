@@ -26,11 +26,16 @@ powercontext setup codex --source oceanbase/powercontext --ref v0.0.2
 powercontext setup claude-code --source oceanbase/powercontext --ref v0.0.2
 powercontext setup dsh --source oceanbase/powercontext --ref v0.0.2
 powercontext setup hermes --source oceanbase/powercontext --ref v0.0.2
+
+# OpenCode currently requires the matching CLI and integration from master.
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
+powercontext setup opencode --source oceanbase/powercontext --ref master
 ```
 
-The first command installs the CLI and local Server in an isolated environment. The subsequent setup commands
-install the corresponding integrations from the matching repository tag. Run setup again to refresh an existing
-installation.
+The first command installs the latest released CLI and local Server in an isolated environment. The release setup
+commands install their integrations from the matching repository tag. Until OpenCode is included in a release, its
+extra `uv tool install` command keeps the CLI, Server, and integration on the same `master` revision. Run setup again
+to refresh an existing integration.
 
 ### 2. Start and verify the local Server
 
