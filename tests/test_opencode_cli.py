@@ -40,16 +40,12 @@ def _write_plugin(root: Path, *, built: bool = True) -> Path:
 
 def _fake_opencode(plugin: Path, config: Path):
     def run(*arguments: str, env: dict[str, str] | None = None) -> str:
+        del env
         if arguments == ("--version",):
             return "1.18.21\n"
         if arguments == ("debug", "paths"):
             return f"config     {config}\n"
         if arguments == ("debug", "config"):
-            if env is not None:
-                Path(env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"]).write_text(
-                    env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"],
-                    encoding="utf-8",
-                )
             return json.dumps({"plugin": [plugin.as_uri()]})
         if arguments[0] == "plugin":
             return ""
@@ -67,12 +63,20 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
     monkeypatch.setattr(opencode_cli, "_run_opencode", _fake_opencode(plugin, config))
+    monkeypatch.setattr(
+        opencode_cli,
+        "_run_opencode_probe",
+        lambda _command, env: Path(env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"]).write_text(
+            env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"], encoding="utf-8"
+        ),
+    )
 
     result = CliRunner().invoke(create_cli([setup_app]), ["setup", "opencode", "--source", str(checkout)])
 
     skill = config / "skills" / "project-context"
     assert result.exit_code == 0
     assert "PowerContext OpenCode setup complete." in result.output
+    assert (config / "plugins" / "powercontext-opencode.js").is_file()
     assert (skill / "SKILL.md").is_file()
     assert json.loads((skill / ".powercontext.json").read_text(encoding="utf-8"))["owner"] == "powercontext"
 
@@ -201,9 +205,17 @@ def test_doctor_opencode_reports_plugin_and_skill(tmp_path: Path, monkeypatch) -
     plugin = _write_plugin(tmp_path / "checkout")
     config = tmp_path / "config"
     skill = config / "skills" / "project-context"
+    opencode_cli._install_plugin(plugin / "lib" / "index.js", config / "plugins" / "powercontext-opencode.js")
     opencode_cli._install_skill(plugin / "skills" / "project-context", skill)
     monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
     monkeypatch.setattr(opencode_cli, "_run_opencode", _fake_opencode(plugin, config))
+    monkeypatch.setattr(
+        opencode_cli,
+        "_run_opencode_probe",
+        lambda _command, env: Path(env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"]).write_text(
+            env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"], encoding="utf-8"
+        ),
+    )
 
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "opencode", "--json"])
 
@@ -233,6 +245,7 @@ def test_doctor_opencode_rejects_configured_but_inactive_plugin(tmp_path: Path, 
         raise AssertionError(arguments)
 
     monkeypatch.setattr(opencode_cli, "_run_opencode", inactive)
+    monkeypatch.setattr(opencode_cli, "_run_opencode_probe", lambda _command, _env: None)
 
     result = CliRunner().invoke(create_cli([doctor_app]), ["doctor", "opencode", "--json"])
 

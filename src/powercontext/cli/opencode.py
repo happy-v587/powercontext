@@ -40,6 +40,7 @@ OPENCODE_PLUGIN_RELATIVE = Path("integrations") / "opencode" / "plugins" / "powe
 OPENCODE_BUNDLE = Path("lib") / "index.js"
 OPENCODE_SKILL = Path("skills") / "project-context" / "SKILL.md"
 SKILL_MANIFEST = ".powercontext.json"
+PLUGIN_MANIFEST = ".powercontext-opencode.json"
 MINIMUM_VERSION = (1, 18, 21)
 _VERSION = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)")
 _COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
@@ -88,9 +89,10 @@ def install_opencode_plugin(*, source: str, ref: str) -> OpenCodeSetupResult:
     plugin_dir = resolve_opencode_plugin_dir(source=source, ref=ref)
     require_complete_plugin(plugin_dir)
     config_dir = opencode_config_dir()
+    plugin_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}.js"
+    _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
     skill_target = config_dir / "skills" / "project-context"
     require_replaceable_skill(skill_target)
-    _run_opencode("plugin", str(plugin_dir), "--global", "--force")
     _install_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target)
     return OpenCodeSetupResult(
         plugin=OPENCODE_PLUGIN_NAME,
@@ -197,6 +199,41 @@ def _owned_skill(path: Path) -> bool:
     except (OSError, ValueError):
         return False
     return payload == {"schema": 1, "owner": "powercontext", "integration": "opencode"}
+
+
+def _plugin_manifest_path(path: Path) -> Path:
+    return path.parent / PLUGIN_MANIFEST
+
+
+def _owned_plugin(path: Path) -> bool:
+    try:
+        payload = json.loads(_plugin_manifest_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return payload == {"schema": 1, "owner": "powercontext", "integration": "opencode-plugin"}
+
+
+def _install_plugin(source: Path, target: Path) -> None:
+    if target.exists() and not _owned_plugin(target):
+        raise SetupError.opencode_plugin_conflict(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.tmp"
+    manifest = _plugin_manifest_path(target)
+    manifest_staging = target.parent / f".{manifest.name}.tmp"
+    try:
+        shutil.copy2(source, staging)
+        manifest_staging.write_text(
+            json.dumps({"schema": 1, "owner": "powercontext", "integration": "opencode-plugin"}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(staging, target)
+        os.replace(manifest_staging, manifest)
+    except OSError as error:
+        with suppress(OSError):
+            staging.unlink()
+        with suppress(OSError):
+            manifest_staging.unlink()
+        raise SetupError.command_unavailable(["install", "OpenCode", "plugin"], error) from error
 
 
 def _is_opencode_plugin(path: Path) -> bool:
@@ -307,7 +344,7 @@ def run_opencode_diagnostics() -> dict[str, Diagnostic]:
     try:
         config_dir = opencode_config_dir()
         output, activated = _probe_plugin_activation()
-        configured = _configured_plugin(output)
+        configured = _configured_plugin(output) or _owned_plugin(config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}.js")
     except SetupError as error:
         return {
             "opencode": Diagnostic(status=DiagnosticStatus.OK, detail=f"{executable} ({actual})"),
@@ -341,16 +378,54 @@ def _probe_plugin_activation() -> tuple[str, bool]:
     token = uuid4().hex
     with tempfile.TemporaryDirectory(prefix="powercontext-opencode-probe-") as directory:
         path = Path(directory) / "active"
-        output = _run_opencode(
-            "debug",
-            "config",
-            env={_ACTIVATION_PROBE_PATH: str(path), _ACTIVATION_PROBE_NONCE: token},
-        )
+        project = Path(directory) / "project"
+        project.mkdir()
+        output = _run_opencode("debug", "config")
+        command = [
+            opencode_executable(),
+            "run",
+            "--dir",
+            str(project),
+            "--model",
+            "invalid/model",
+            "PowerContext plugin activation probe",
+            "--format",
+            "json",
+        ]
+        try:
+            # `debug config` only resolves configuration and does not load plugins.
+            # Run a model-free failing request so OpenCode initializes the plugin
+            # lifecycle without requiring provider credentials or a live Server.
+            _run_opencode_probe(
+                command,
+                {
+                    _ACTIVATION_PROBE_PATH: str(path),
+                    _ACTIVATION_PROBE_NONCE: token,
+                },
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise SetupError.command_unavailable(command, error) from error
         try:
             activated = path.read_text(encoding="utf-8") == token
         except OSError:
             activated = False
     return output, activated
+
+
+def _run_opencode_probe(command: list[str], env: dict[str, str]) -> None:
+    try:
+        subprocess.run(  # noqa: S603 - command uses the fixed OpenCode executable and literal arguments.
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            env=os.environ | env,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SetupError.command_unavailable(command, error) from error
 
 
 def _run_opencode(*arguments: str, env: dict[str, str] | None = None) -> str:
