@@ -155,7 +155,9 @@ class SetupError(RuntimeError):
 
     @classmethod
     def incomplete_opencode_plugin(cls, path: Path) -> SetupError:
-        return cls(f"PowerContext OpenCode plugin at {path} is missing lib/index.js or project-context Skill.")
+        return cls(
+            f"PowerContext OpenCode plugin at {path} is missing lib/index.js, lib/tui.js, or project-context Skill."
+        )
 
     @classmethod
     def invalid_opencode_ref(cls, ref: str) -> SetupError:

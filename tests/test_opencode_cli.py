@@ -40,6 +40,7 @@ def _write_plugin(root: Path, *, built: bool = True) -> Path:
     if built:
         (plugin / "lib").mkdir()
         (plugin / "lib" / "index.js").write_text("export default {}\n", encoding="utf-8")
+        (plugin / "lib" / "tui.js").write_text("export default {}\n", encoding="utf-8")
     return plugin
 
 
@@ -371,7 +372,7 @@ def test_setup_opencode_rejects_unsupported_version(tmp_path: Path, monkeypatch)
     assert "requires OpenCode v1.18.21" in result.output
 
 
-def test_doctor_opencode_reports_plugin_and_skill(tmp_path: Path, monkeypatch) -> None:
+def test_doctor_opencode_reports_plugin_when_another_plugin_writes_to_stdout(tmp_path: Path, monkeypatch) -> None:
     import powercontext.cli.opencode as opencode_cli
 
     plugin = _write_plugin(tmp_path / "checkout")
@@ -380,7 +381,15 @@ def test_doctor_opencode_reports_plugin_and_skill(tmp_path: Path, monkeypatch) -
     opencode_cli._install_plugin(plugin / "lib" / "index.js", config / "plugins" / "powercontext-opencode.js")
     opencode_cli._install_skill(plugin / "skills" / "project-context", skill)
     monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
-    monkeypatch.setattr(opencode_cli, "_run_opencode", _fake_opencode(plugin, config))
+    fake_opencode = _fake_opencode(plugin, config)
+
+    def noisy(*arguments: str, env: dict[str, str] | None = None) -> str:
+        output = fake_opencode(*arguments, env=env)
+        if arguments == ("debug", "config"):
+            return f"[another-plugin] initialized\n{output}"
+        return output
+
+    monkeypatch.setattr(opencode_cli, "_run_opencode", noisy)
     monkeypatch.setattr(
         opencode_cli,
         "_run_opencode_probe",

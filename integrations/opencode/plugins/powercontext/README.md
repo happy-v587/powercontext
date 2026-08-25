@@ -16,6 +16,12 @@ evidence. Recalled content is inserted transiently before model dispatch and is 
 not persisted into the OpenCode transcript. Curated `pc_*` tools expose Memory, Handoff, Experience, Skill, and
 read-only Candidate operations. OpenCode asks before a named durable mutation.
 
+The package also installs a TUI plugin. Run `/pc` in interactive OpenCode to open the PowerContext command prompt,
+then use the same subcommands as the DSH plugin: `doctor`, `search`, `remember`, `flush`, `review`, `stats`,
+`capabilities`, and `skills scan`. The command is also available from the OpenCode command palette as
+`PowerContext command`. TUI commands are human-initiated; automatic recall and capture remain in the separate Server
+plugin entrypoint.
+
 The project scope comes from the normalized Git remote, falling back to a hash of the worktree path. Set
 `POWERCONTEXT_OPENCODE_SCOPE_ID` to override it. Other configuration uses the same prefix with `BASE_URL`,
 `AUTHORIZATION`, `CAPTURE_PROMPTS`, `FLUSH_ON_CAPTURE`, `REQUEST_TIMEOUT_MS`, `HTTP_BUDGET_MS`, `MAX_BYTES`, and
