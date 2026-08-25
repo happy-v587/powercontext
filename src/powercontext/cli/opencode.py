@@ -29,6 +29,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
+from typing import cast
 from urllib.error import URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
@@ -96,10 +97,14 @@ def install_opencode_plugin(*, source: str, ref: str) -> OpenCodeSetupResult:
     require_complete_plugin(plugin_dir)
     config_dir = opencode_config_dir()
     plugin_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}.js"
+    tui_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}-tui.js"
     skill_target = config_dir / "skills" / "project-context"
     require_replaceable_plugin(plugin_target)
+    require_replaceable_plugin(tui_target)
     require_replaceable_skill(skill_target)
     _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
+    _install_plugin(plugin_dir / OPENCODE_TUI_BUNDLE, tui_target)
+    _install_tui_config(config_dir, tui_target)
     _install_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target)
     return OpenCodeSetupResult(
         plugin=OPENCODE_PLUGIN_NAME,
@@ -251,6 +256,57 @@ def _install_plugin(source: Path, target: Path) -> None:
         with suppress(OSError):
             manifest_staging.unlink()
         raise SetupError.command_unavailable(["install", "OpenCode", "plugin"], error) from error
+
+
+def _tui_config_path(config_dir: Path) -> Path:
+    for name in ("tui.json", "tui.jsonc"):
+        candidate = config_dir / name
+        if candidate.is_file():
+            return candidate
+    return config_dir / "tui.json"
+
+
+def _tui_entry_path(entry: object) -> Path | None:
+    spec = entry[0] if isinstance(entry, list) and entry else entry
+    if not isinstance(spec, str):
+        return None
+    parsed = urlparse(spec)
+    raw = unquote(parsed.path) if parsed.scheme == "file" else spec
+    return Path(raw).expanduser().resolve()
+
+
+def _read_tui_config(config_path: Path) -> tuple[dict[str, object], list[object]]:
+    if config_path.exists():
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    else:
+        payload = {"$schema": "https://opencode.ai/tui.json"}
+    if not isinstance(payload, dict):
+        raise TypeError
+    typed_payload = cast(dict[str, object], payload)
+    plugins_value = typed_payload.setdefault("plugin", [])
+    if not isinstance(plugins_value, list):
+        raise TypeError
+    plugins = cast(list[object], plugins_value)
+    return typed_payload, plugins
+
+
+def _install_tui_config(config_dir: Path, plugin_path: Path) -> None:
+    config_path = _tui_config_path(config_dir)
+    staging = config_path.with_name(f".{config_path.name}.tmp")
+    try:
+        payload, plugins = _read_tui_config(config_path)
+    except (OSError, TypeError, ValueError) as error:
+        raise SetupError.command_unavailable(["read", "OpenCode", "TUI config"], error) from error
+    try:
+        target = plugin_path.resolve()
+        if not any(_tui_entry_path(entry) == target for entry in plugins):
+            plugins.append(str(target))
+        staging.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.replace(staging, config_path)
+    except OSError as error:
+        with suppress(OSError):
+            staging.unlink()
+        raise SetupError.command_unavailable(["install", "OpenCode", "TUI plugin"], error) from error
 
 
 def _is_opencode_plugin(path: Path) -> bool:

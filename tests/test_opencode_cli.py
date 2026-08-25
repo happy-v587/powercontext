@@ -133,6 +133,11 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     checkout = tmp_path / "checkout"
     plugin = _write_plugin(checkout)
     config = tmp_path / "config"
+    config.mkdir()
+    (config / "tui.json").write_text(
+        json.dumps({"$schema": "https://opencode.ai/tui.json", "plugin": ["@mem9/opencode"]}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
     monkeypatch.setattr(opencode_cli, "_run_opencode", _fake_opencode(plugin, config))
@@ -150,6 +155,10 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     assert result.exit_code == 0
     assert "PowerContext OpenCode setup complete." in result.output
     assert (config / "plugins" / "powercontext-opencode.js").is_file()
+    assert (config / "plugins" / "powercontext-opencode-tui.js").is_file()
+    tui_config = json.loads((config / "tui.json").read_text(encoding="utf-8"))
+    assert tui_config["plugin"][0] == "@mem9/opencode"
+    assert str((config / "plugins" / "powercontext-opencode-tui.js").resolve()) in tui_config["plugin"]
     assert (skill / "SKILL.md").is_file()
     assert json.loads((skill / ".powercontext.json").read_text(encoding="utf-8"))["owner"] == "powercontext"
 
