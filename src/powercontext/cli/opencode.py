@@ -38,6 +38,7 @@ from powercontext.paths import powercontext_data_dir
 OPENCODE_PLUGIN_NAME = "powercontext-opencode"
 OPENCODE_PLUGIN_RELATIVE = Path("integrations") / "opencode" / "plugins" / "powercontext"
 OPENCODE_BUNDLE = Path("lib") / "index.js"
+OPENCODE_TUI_BUNDLE = Path("lib") / "tui.js"
 OPENCODE_SKILL = Path("skills") / "project-context" / "SKILL.md"
 SKILL_MANIFEST = ".powercontext.json"
 PLUGIN_MANIFEST = ".powercontext-opencode.json"
@@ -120,7 +121,11 @@ def plugin_dir_from_checkout(root: Path) -> Path:
 
 
 def require_complete_plugin(path: Path) -> None:
-    if not (path / OPENCODE_BUNDLE).is_file() or not (path / OPENCODE_SKILL).is_file():
+    if (
+        not (path / OPENCODE_BUNDLE).is_file()
+        or not (path / OPENCODE_TUI_BUNDLE).is_file()
+        or not (path / OPENCODE_SKILL).is_file()
+    ):
         raise SetupError.incomplete_opencode_plugin(path)
 
 
@@ -310,9 +315,8 @@ def _replace_checkout(staging: Path, target: Path) -> None:
 
 
 def _configured_plugin(output: str) -> bool:
-    try:
-        payload = json.loads(output)
-    except ValueError:
+    payload = _debug_config_payload(output)
+    if payload is None:
         return False
     plugins = payload.get("plugin") if isinstance(payload, dict) else None
     if not isinstance(plugins, list):
@@ -327,6 +331,22 @@ def _configured_plugin(output: str) -> bool:
         if _is_opencode_plugin(path) or _is_opencode_plugin(path.parent):
             return True
     return False
+
+
+def _debug_config_payload(output: str) -> dict[str, object] | None:
+    """Extract OpenCode's config when a loaded plugin writes to stdout first."""
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(output, index)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("plugin"), list):
+            return payload
+    return None
 
 
 def run_opencode_diagnostics() -> dict[str, Diagnostic]:
