@@ -401,10 +401,48 @@ function createTimeoutSignal(timeoutMs) {
 }
 async function readLimitedBody(response) {
 	const declared = response.headers.get("content-length");
-	if (declared && Number(declared) > MAX_RESPONSE_BYTES) throw new InvalidResponseError("/");
-	const buffer = new Uint8Array(await response.arrayBuffer());
-	if (buffer.byteLength > MAX_RESPONSE_BYTES) throw new InvalidResponseError("/");
-	return buffer;
+	const parsedLength = declared === null ? void 0 : Number(declared);
+	const declaredBytes = parsedLength !== void 0 && Number.isFinite(parsedLength) && parsedLength >= 0 ? parsedLength : void 0;
+	if (declaredBytes !== void 0 && declaredBytes > MAX_RESPONSE_BYTES) {
+		try {
+			await response.body?.cancel();
+		} catch {}
+		throw new InvalidResponseError("/");
+	}
+	if (!response.body) return new Uint8Array();
+	const reader = response.body.getReader();
+	const chunks = [];
+	let length = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value?.byteLength) continue;
+			if (length + value.byteLength > MAX_RESPONSE_BYTES) {
+				try {
+					await reader.cancel();
+				} catch {}
+				throw new InvalidResponseError("/");
+			}
+			chunks.push(value);
+			length += value.byteLength;
+			if (declaredBytes === void 0 && length === MAX_RESPONSE_BYTES) {
+				try {
+					await reader.cancel();
+				} catch {}
+				throw new InvalidResponseError("/");
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const body = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return body;
 }
 function queryString(payload) {
 	const params = new URLSearchParams();
@@ -831,7 +869,7 @@ async function capturePrompt(runtime, input) {
 			metadata: {
 				origin: "opencode",
 				event: "user_prompt_submit",
-				cwd: runtime.cwd,
+				cwd: input.cwd,
 				session_id: input.sessionID,
 				message_id: input.messageID
 			}
@@ -848,11 +886,11 @@ async function prepareTurn(runtime, input) {
 	setTurn(runtime, input.sessionID, { messageID: input.messageID });
 	const signal = createTimeoutSignal(runtime.config.httpBudgetMs);
 	try {
-		const scopeId = await runtime.resolveScope();
+		const context = await runtime.resolveSessionContext(input.sessionID);
 		let content;
 		try {
 			const prepared = validatePreparedContext((await runtime.client.request("prepare_context", {
-				scope_id: scopeId,
+				scope_id: context.scopeId,
 				query: input.prompt,
 				max_bytes: runtime.config.maxBytes
 			}, signal)).value, runtime.config.maxBytes);
@@ -874,7 +912,7 @@ async function prepareTurn(runtime, input) {
 		});
 		await capturePrompt(runtime, {
 			...input,
-			scopeId,
+			...context,
 			signal
 		});
 	} catch {
@@ -884,25 +922,48 @@ async function prepareTurn(runtime, input) {
 		});
 	}
 }
+async function sessionContextFromDirectory(cwd, config) {
+	const directory = cwd.trim();
+	if (!directory) throw new Error("OpenCode session has no directory");
+	return {
+		cwd: directory,
+		scopeId: await deriveScopeId(directory, { configuredScopeId: config.scopeId })
+	};
+}
+async function loadSessionContext(input, config, sessionID) {
+	const cwd = (await input.client.session.get({ path: { id: sessionID } })).data?.directory;
+	if (!cwd) throw new Error(`OpenCode session ${sessionID} has no directory`);
+	return sessionContextFromDirectory(cwd, config);
+}
 function createRuntime(input, config) {
-	const cwd = input.worktree?.trim() || input.directory;
-	let scope;
+	const sessionContexts = /* @__PURE__ */ new Map();
 	return {
 		config,
-		cwd,
 		client: new PowerContextClient({
 			baseUrl: config.baseUrl,
 			authorization: config.authorization,
 			requestTimeoutMs: config.requestTimeoutMs
 		}),
-		turns: /* @__PURE__ */ new Map(),
-		resolveScope() {
-			scope ??= deriveScopeId(cwd, { configuredScopeId: config.scopeId });
-			scope.catch(() => {
-				scope = void 0;
+		sessionContexts,
+		cacheSessionContext(sessionID, cwd) {
+			const context = sessionContextFromDirectory(cwd, config);
+			sessionContexts.set(sessionID, context);
+			context.catch(() => {
+				if (sessionContexts.get(sessionID) === context) sessionContexts.delete(sessionID);
 			});
-			return scope;
 		},
+		resolveSessionContext(sessionID) {
+			let context = sessionContexts.get(sessionID);
+			if (!context) {
+				context = loadSessionContext(input, config, sessionID);
+				sessionContexts.set(sessionID, context);
+				context.catch(() => {
+					if (sessionContexts.get(sessionID) === context) sessionContexts.delete(sessionID);
+				});
+			}
+			return context;
+		},
+		turns: /* @__PURE__ */ new Map(),
 		async log(event) {
 			try {
 				await input.client.app.log({ body: {
@@ -1227,9 +1288,17 @@ const PowerContextPlugin = async (input) => {
 		},
 		event: async ({ event }) => {
 			const value = event;
+			const info = value.properties?.info;
+			if ((value.type === "session.created" || value.type === "session.updated") && info?.id && info.directory) {
+				runtime.cacheSessionContext(info.id, info.directory);
+				return;
+			}
 			if (value.type !== "session.deleted") return;
-			const sessionID = value.properties?.info?.id ?? value.properties?.sessionID;
-			if (sessionID) runtime.turns.delete(sessionID);
+			const sessionID = info?.id ?? value.properties?.sessionID;
+			if (sessionID) {
+				runtime.sessionContexts.delete(sessionID);
+				runtime.turns.delete(sessionID);
+			}
 		}
 	};
 	await signalActivationProbe(runtime);

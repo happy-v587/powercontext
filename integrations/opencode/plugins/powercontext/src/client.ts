@@ -57,10 +57,54 @@ export function createTimeoutSignal(timeoutMs: number): AbortSignal {
 
 async function readLimitedBody(response: Response): Promise<Uint8Array> {
   const declared = response.headers.get('content-length')
-  if (declared && Number(declared) > MAX_RESPONSE_BYTES) throw new InvalidResponseError('/')
-  const buffer = new Uint8Array(await response.arrayBuffer())
-  if (buffer.byteLength > MAX_RESPONSE_BYTES) throw new InvalidResponseError('/')
-  return buffer
+  const parsedLength = declared === null ? undefined : Number(declared)
+  const declaredBytes = parsedLength !== undefined && Number.isFinite(parsedLength) && parsedLength >= 0
+    ? parsedLength
+    : undefined
+  if (declaredBytes !== undefined && declaredBytes > MAX_RESPONSE_BYTES) {
+    try {
+      await response.body?.cancel()
+    } catch {}
+    throw new InvalidResponseError('/')
+  }
+  if (!response.body) return new Uint8Array()
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let length = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+      if (length + value.byteLength > MAX_RESPONSE_BYTES) {
+        try {
+          await reader.cancel()
+        } catch {}
+        throw new InvalidResponseError('/')
+      }
+      chunks.push(value)
+      length += value.byteLength
+      if (declaredBytes === undefined && length === MAX_RESPONSE_BYTES) {
+        // Unknown-length streams can prefetch the next chunk before cancellation.
+        // Stop at the boundary instead of risking an allocation beyond the limit.
+        try {
+          await reader.cancel()
+        } catch {}
+        throw new InvalidResponseError('/')
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const body = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body
 }
 
 function queryString(payload: JsonObject | undefined): string {

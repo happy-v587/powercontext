@@ -50,12 +50,14 @@ type MessageBundle = {
 }
 
 type CachedTurn = { messageID: string; content?: string }
+type SessionContext = { cwd: string; scopeId: string }
 
 interface Runtime {
   client: PowerContextClient
   config: ResolvedConfig
-  cwd: string
-  resolveScope: () => Promise<string>
+  cacheSessionContext: (sessionID: string, cwd: string) => void
+  resolveSessionContext: (sessionID: string) => Promise<SessionContext>
+  sessionContexts: Map<string, Promise<SessionContext>>
   turns: Map<string, CachedTurn>
   log: (event: Record<string, unknown>) => Promise<void>
 }
@@ -128,7 +130,7 @@ async function flushThrough(runtime: Runtime, scopeId: string, position: number,
 
 async function capturePrompt(
   runtime: Runtime,
-  input: { scopeId: string; sessionID: string; messageID: string; prompt: string; signal: AbortSignal },
+  input: { cwd: string; scopeId: string; sessionID: string; messageID: string; prompt: string; signal: AbortSignal },
 ): Promise<void> {
   if (
     !runtime.config.capturePrompts
@@ -143,7 +145,7 @@ async function capturePrompt(
       metadata: {
         origin: 'opencode',
         event: 'user_prompt_submit',
-        cwd: runtime.cwd,
+        cwd: input.cwd,
         session_id: input.sessionID,
         message_id: input.messageID,
       },
@@ -164,11 +166,11 @@ async function prepareTurn(
   setTurn(runtime, input.sessionID, { messageID: input.messageID })
   const signal = createTimeoutSignal(runtime.config.httpBudgetMs)
   try {
-    const scopeId = await runtime.resolveScope()
+    const context = await runtime.resolveSessionContext(input.sessionID)
     let content: string | undefined
     try {
       const result = await runtime.client.request('prepare_context', {
-        scope_id: scopeId,
+        scope_id: context.scopeId,
         query: input.prompt,
         max_bytes: runtime.config.maxBytes,
       }, signal)
@@ -183,29 +185,54 @@ async function prepareTurn(
       await runtime.log({ event: 'context_prepare', outcome: 'failed' })
     }
     setTurn(runtime, input.sessionID, { messageID: input.messageID, content })
-    await capturePrompt(runtime, { ...input, scopeId, signal })
+    await capturePrompt(runtime, { ...input, ...context, signal })
   } catch {
     await runtime.log({ event: 'turn_prepare', outcome: 'failed' })
   }
 }
 
+async function sessionContextFromDirectory(cwd: string, config: ResolvedConfig): Promise<SessionContext> {
+  const directory = cwd.trim()
+  if (!directory) throw new Error('OpenCode session has no directory')
+  return { cwd: directory, scopeId: await deriveScopeId(directory, { configuredScopeId: config.scopeId }) }
+}
+
+async function loadSessionContext(input: PluginInput, config: ResolvedConfig, sessionID: string): Promise<SessionContext> {
+  const result = await input.client.session.get({ path: { id: sessionID } })
+  const cwd = result.data?.directory
+  if (!cwd) throw new Error(`OpenCode session ${sessionID} has no directory`)
+  return sessionContextFromDirectory(cwd, config)
+}
+
 function createRuntime(input: PluginInput, config: ResolvedConfig): Runtime {
-  const cwd = input.worktree?.trim() || input.directory
-  let scope: Promise<string> | undefined
+  const sessionContexts = new Map<string, Promise<SessionContext>>()
   return {
     config,
-    cwd,
     client: new PowerContextClient({
       baseUrl: config.baseUrl,
       authorization: config.authorization,
       requestTimeoutMs: config.requestTimeoutMs,
     }),
-    turns: new Map(),
-    resolveScope() {
-      scope ??= deriveScopeId(cwd, { configuredScopeId: config.scopeId })
-      void scope.catch(() => { scope = undefined })
-      return scope
+    sessionContexts,
+    cacheSessionContext(sessionID, cwd) {
+      const context = sessionContextFromDirectory(cwd, config)
+      sessionContexts.set(sessionID, context)
+      void context.catch(() => {
+        if (sessionContexts.get(sessionID) === context) sessionContexts.delete(sessionID)
+      })
     },
+    resolveSessionContext(sessionID) {
+      let context = sessionContexts.get(sessionID)
+      if (!context) {
+        context = loadSessionContext(input, config, sessionID)
+        sessionContexts.set(sessionID, context)
+        void context.catch(() => {
+          if (sessionContexts.get(sessionID) === context) sessionContexts.delete(sessionID)
+        })
+      }
+      return context
+    },
+    turns: new Map(),
     async log(event) {
       try {
         await input.client.app.log({
@@ -456,10 +483,21 @@ export const PowerContextPlugin: Plugin = async (input) => {
       output.system.push(GUIDANCE)
     },
     event: async ({ event }) => {
-      const value = event as unknown as { type?: string; properties?: { info?: { id?: string }; sessionID?: string } }
+      const value = event as unknown as {
+        type?: string
+        properties?: { info?: { id?: string; directory?: string }; sessionID?: string }
+      }
+      const info = value.properties?.info
+      if ((value.type === 'session.created' || value.type === 'session.updated') && info?.id && info.directory) {
+        runtime.cacheSessionContext(info.id, info.directory)
+        return
+      }
       if (value.type !== 'session.deleted') return
-      const sessionID = value.properties?.info?.id ?? value.properties?.sessionID
-      if (sessionID) runtime.turns.delete(sessionID)
+      const sessionID = info?.id ?? value.properties?.sessionID
+      if (sessionID) {
+        runtime.sessionContexts.delete(sessionID)
+        runtime.turns.delete(sessionID)
+      }
     },
   }
   await signalActivationProbe(runtime)

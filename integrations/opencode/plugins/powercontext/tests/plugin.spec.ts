@@ -15,7 +15,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -32,14 +32,21 @@ const ENV_KEYS = [
   'POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE',
 ] as const
 
-function pluginInput() {
+function pluginInput(sessionDirectories: Map<string, string> = new Map([['session-1', '/tmp/project']])) {
   return {
     directory: '/tmp/project',
     worktree: '/tmp/project',
     serverUrl: new URL('http://127.0.0.1:4096'),
     project: {},
     $: {},
-    client: { app: { log: vi.fn(async () => ({})) } },
+    client: {
+      app: { log: vi.fn(async () => ({})) },
+      session: {
+        get: vi.fn(async ({ path }: { path: { id: string } }) => ({
+          data: sessionDirectories.has(path.id) ? { directory: sessionDirectories.get(path.id) } : undefined,
+        })),
+      },
+    },
   } as any
 }
 
@@ -218,5 +225,172 @@ describe('PowerContextPlugin', () => {
       { message: incoming.info, parts: incoming.parts } as any,
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves automatic scope and capture cwd per OpenCode session', async () => {
+    const firstDirectory = await mkdtemp(join(tmpdir(), 'powercontext-opencode-a-'))
+    const secondDirectory = await mkdtemp(join(tmpdir(), 'powercontext-opencode-b-'))
+    try {
+      const calls: Array<{ url: string; body: any }> = []
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, body: JSON.parse(String(init.body)) })
+        if (url.endsWith('/v1/context/prepare')) {
+          return Response.json({
+            schema: 'powercontext.prepared-context.v1',
+            status: 'empty',
+            content: null,
+            content_bytes: 0,
+          })
+        }
+        return Response.json({ position: 7 }, { status: 202 })
+      }))
+      const sessionDirectories = new Map([
+        ['session-a', firstDirectory],
+        ['session-b', secondDirectory],
+      ])
+      const input = pluginInput(sessionDirectories)
+      const hooks = await PowerContextPlugin(input)
+
+      for (const [sessionID, messageID] of [['session-a', 'msg-a'], ['session-b', 'msg-b']] as const) {
+        await hooks.event?.({
+          event: { type: 'session.created', properties: { info: { id: sessionID, directory: sessionDirectories.get(sessionID) } } },
+        } as any)
+        const incoming = userMessage()
+        incoming.info.sessionID = sessionID
+        incoming.info.id = messageID
+        incoming.parts[0]!.sessionID = sessionID
+        incoming.parts[0]!.messageID = messageID
+        await hooks['chat.message']?.(
+          { sessionID, messageID },
+          { message: incoming.info, parts: incoming.parts } as any,
+        )
+      }
+
+      const prepared = calls.filter((call) => call.url.endsWith('/v1/context/prepare'))
+      expect(prepared).toHaveLength(2)
+      expect(new Set(prepared.map((call) => call.body.scope_id)).size).toBe(2)
+      const captured = calls.filter((call) => call.url.endsWith('/v1/sources/content'))
+      expect(captured.map((call) => call.body.metadata.cwd)).toEqual([firstDirectory, secondDirectory])
+      expect(input.client.session.get).not.toHaveBeenCalled()
+    } finally {
+      await rm(firstDirectory, { recursive: true, force: true })
+      await rm(secondDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('loads uncached session directories and shares scope only within the same project', async () => {
+    const firstProject = await mkdtemp(join(tmpdir(), 'powercontext-opencode-shared-'))
+    const secondProject = await mkdtemp(join(tmpdir(), 'powercontext-opencode-isolated-'))
+    try {
+      const calls: Array<{ url: string; body: any }> = []
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, body: JSON.parse(String(init.body)) })
+        if (url.endsWith('/v1/context/prepare')) {
+          return Response.json({
+            schema: 'powercontext.prepared-context.v1',
+            status: 'empty',
+            content: null,
+            content_bytes: 0,
+          })
+        }
+        return Response.json({ position: 7 }, { status: 202 })
+      }))
+      const input = pluginInput(new Map([
+        ['session-a', firstProject],
+        ['session-a-peer', firstProject],
+        ['session-b', secondProject],
+      ]))
+      const hooks = await PowerContextPlugin(input)
+
+      for (const [sessionID, messageID] of [
+        ['session-a', 'msg-a'],
+        ['session-a-peer', 'msg-a-peer'],
+        ['session-b', 'msg-b'],
+      ] as const) {
+        const incoming = userMessage()
+        incoming.info.sessionID = sessionID
+        incoming.info.id = messageID
+        incoming.parts[0]!.sessionID = sessionID
+        incoming.parts[0]!.messageID = messageID
+        await hooks['chat.message']?.(
+          { sessionID, messageID },
+          { message: incoming.info, parts: incoming.parts } as any,
+        )
+      }
+
+      const prepared = calls.filter((call) => call.url.endsWith('/v1/context/prepare'))
+      expect(prepared).toHaveLength(3)
+      expect(prepared.map((call) => call.body.scope_id)).toEqual([
+        prepared[0]?.body.scope_id,
+        prepared[0]?.body.scope_id,
+        prepared[2]?.body.scope_id,
+      ])
+      expect(prepared[2]?.body.scope_id).not.toBe(prepared[0]?.body.scope_id)
+      const captured = calls.filter((call) => call.url.endsWith('/v1/sources/content'))
+      expect(captured.map((call) => call.body.metadata.cwd)).toEqual([firstProject, firstProject, secondProject])
+      expect(input.client.session.get).toHaveBeenCalledTimes(3)
+    } finally {
+      await rm(firstProject, { recursive: true, force: true })
+      await rm(secondProject, { recursive: true, force: true })
+    }
+  })
+
+  it('clears the cached session context when the session is deleted', async () => {
+    process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
+    const calls: Array<{ url: string; body: any }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) })
+      if (url.endsWith('/v1/context/prepare')) {
+        return Response.json({
+          schema: 'powercontext.prepared-context.v1',
+          status: 'empty',
+          content: null,
+          content_bytes: 0,
+        })
+      }
+      return Response.json({ position: 7 }, { status: 202 })
+    }))
+    const sessionDirectories = new Map([['session-1', '/tmp/project-before-delete']])
+    const input = pluginInput(sessionDirectories)
+    const hooks = await PowerContextPlugin(input)
+
+    await hooks['chat.message']?.(
+      { sessionID: 'session-1', messageID: 'msg-before' },
+      { message: userMessage().info, parts: userMessage().parts } as any,
+    )
+    sessionDirectories.set('session-1', '/tmp/project-after-delete')
+    await hooks.event?.({
+      event: { type: 'session.deleted', properties: { info: { id: 'session-1' } } },
+    } as any)
+    await hooks['chat.message']?.(
+      { sessionID: 'session-1', messageID: 'msg-after' },
+      { message: { ...userMessage().info, id: 'msg-after' }, parts: userMessage().parts } as any,
+    )
+
+    const captured = calls.filter((call) => call.url.endsWith('/v1/sources/content'))
+    expect(captured.map((call) => call.body.metadata.cwd)).toEqual([
+      '/tmp/project-before-delete',
+      '/tmp/project-after-delete',
+    ])
+    expect(input.client.session.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails open when the OpenCode session directory is unavailable', async () => {
+    process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
+    const fetchMock = vi.fn(async () => Response.json({
+      schema: 'powercontext.prepared-context.v1',
+      status: 'empty',
+      content: null,
+      content_bytes: 0,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const hooks = await PowerContextPlugin(pluginInput(new Map()))
+
+    await hooks['chat.message']?.(
+      { sessionID: 'missing-session', messageID: 'msg-1' },
+      { message: userMessage().info, parts: userMessage().parts } as any,
+    )
+
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
