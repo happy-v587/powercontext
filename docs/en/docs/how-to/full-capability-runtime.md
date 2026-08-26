@@ -5,135 +5,98 @@ description: Start all PowerContext capabilities in five minutes.
 
 # Full-capability Quick Start
 
+## Choose the Scope ID first
+
+The Scope ID is PowerContext's data namespace. Think of it as the project ID. Sources, Memories, and Handoffs belong to
+a Scope; the Dashboard and Coding Agent must use the same Scope ID for Agent-written data to appear in the web UI.
+
+A Server can store multiple Scopes. The Server configuration determines which Scopes the Dashboard can display, while
+the Coding Agent configuration determines which Scope the current session reads and writes:
+
+```text
+Coding Agent ── read/write ──> project:quickstart <── display ── Dashboard
+```
+
+Use any short, stable, non-empty string. Do not include keys or other secrets. For example:
+
+```text
+project:quickstart
+git:github.com/oceanbase/powercontext
+team:payment-service
+```
+
+This Quick Start uses:
+
+```text
+project:quickstart
+```
+
 ## Quick Start
 
-### 1. Generate the configuration
+### Part 1: Start the Server
+
+#### 1. Install
+
+```bash
+uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
+```
+
+#### 2. Generate the configuration
 
 ```bash
 powercontext config init --output .env
 ```
 
-The short setup asks for the Scope ID, API protocol, Base URL, API key, and plain model names. It derives internal
-provider adapters and environment-variable names automatically. Provider choices describe stable API contracts, not
-cloud vendors: Alibaba Cloud Model Studio, a local vLLM service, and other OpenAI-compatible endpoints use the same
-OpenAI-compatible path. Press Enter to accept the working SQLite defaults.
-After writing `.env`, the command prints setup and launch commands for Codex, Claude Code, DeepSeek Harness,
-OpenCode, and Pi. Choose one block; the wizard no longer asks for a single Coding Agent.
+When finished, the command prints setup and launch commands for Codex, Claude Code, DeepSeek Harness, OpenCode, and Pi.
 
-Inspect or validate the generated environment file:
-
-```bash
-powercontext config show --env-file .env
-powercontext config validate --env-file .env
-```
-
-`show` always redacts credentials.
-
-### 2. Start
+#### 3. Start the Server
 
 ```bash
 powercontext server run --env-file .env
 ```
 
-Keep this terminal running, then open <http://127.0.0.1:8000/>.
+#### 4. Verify the Server
 
-### 3. Verify
-
-In a second terminal, run:
+Run this in a second terminal:
 
 ```bash
 set -a
 . ./.env
 set +a
-
-powercontext doctor
 powercontext ready
 powercontext capabilities
 ```
 
-A successful full-capability start includes:
+Confirm these three results:
 
 ```text
 Status: ready
-database: ready
-inference.embedding: ready
-inference.generation: ready
 Memory extraction: enabled
 Search modes: auto, fts, vector, hybrid
 ```
 
-The runtime is ready when the Dashboard shows the project scope and these checks agree.
+The full-capability runtime is ready when `Status: ready`, `Memory extraction: enabled`, all four search modes are
+listed, and the Dashboard contains `Quick Start`.
 
-## Verify Source-to-Memory processing
+### Part 2: Start a Coding Agent
 
-Replace `SCOPE_ID` with the exact value used in `.env`:
+The Config Generator prints setup and launch commands for every supported Coding Agent. Open a new terminal, choose an
+Agent, and copy the two commands under it. The first installs the PowerContext integration; the second loads the
+generated `.env` and starts the Agent, so you do not need to enter the Scope ID again.
 
-```bash
-SCOPE_ID=git:github.com/your-org/your-repo
-
-curl -fsS http://127.0.0.1:8000/v1/sources/content \
-  -H 'Content-Type: application/json' \
-  --data @- <<JSON
-{"scope_id":"$SCOPE_ID","source_id":"full-runtime-check-1","content":"The project keeps its full runtime configuration in a local .env file."}
-JSON
-
-curl -fsS http://127.0.0.1:8000/v1/memory/flush \
-  -H 'Content-Type: application/json' \
-  --data "{\"scope_id\":\"$SCOPE_ID\"}"
-
-powercontext stats --scope-id "$SCOPE_ID"
-```
-
-Capture returns HTTP `202`. After flush, `stats` should show the Source as processed. The extraction policy can decide
-that no new Memory is warranted, so a processed Source without new Memory is valid. Use a new `source_id` when
-repeating the test.
-
-## What each setting enables
-
-| Setting | Enabled capability | When missing |
-| --- | --- | --- |
-| Generation model | Source extraction and Experience, Skill, and Handoff generation | Sources are stored but not extracted |
-| Embedding model/profile/dimension | Vector and hybrid search | FTS remains available |
-| Schedule seconds | Background Source processing | Flush must be called manually |
-| Dashboard scopes | Project entries in the web UI | Dashboard shows an empty state |
-| MCP enabled/path | Agent MCP tools | HTTP API and Dashboard still run |
-
-SQLite vector search uses `sqlite-vec` bundled with `powercontext[server]`; no extension path is required.
-
-## Keep the Scope ID consistent
-
-The Dashboard does not discover scopes automatically. It, HTTP requests, and Agent hosts must use the same exact
-string:
-
-| Host | Explicit override |
-| --- | --- |
-| Codex | `POWERCONTEXT_CODEX_SCOPE_ID` |
-| Claude Code | `POWERCONTEXT_CLAUDE_SCOPE_ID` |
-| DeepSeek Harness | `POWERCONTEXT_DSH_SCOPE_ID` |
-| OpenCode | `POWERCONTEXT_OPENCODE_SCOPE_ID` |
-| Pi | `POWERCONTEXT_PI_SCOPE_ID` |
-| LangGraph | `POWERCONTEXT_LANGGRAPH_SCOPE_ID` |
-
-Git workspaces normally derive the scope automatically. Set an override only when derived values differ, then restart
-the Agent host.
-
-## Database and security
-
-Do not set `POWERCONTEXT_SERVER_DATABASE_URL` casually. When it is unset, the Server reuses the database in the
-operating-system user data directory. A relative SQLite path changes with the startup directory and can accidentally
-open an empty database.
-
-Do not commit `.env`, API keys, tokens, or other secrets, and do not write secrets into Source or Memory. Press
-`Ctrl-C` in the Server terminal to stop cleanly; the database and scheduler state remain persistent.
+After the Coding Agent starts, send an ordinary prompt in the project. The integration first recalls relevant Memory
+from `project:quickstart`, then saves the prompt as a Source. The Scheduler attempts to extract Memory from that Source
+within 60 seconds. Refresh the Dashboard to view the data in the same Scope.
 
 ## Quick troubleshooting
 
 | Symptom | Action |
 | --- | --- |
-| Dashboard is empty | Compare the complete Dashboard and Agent scope strings |
-| `ready` is `degraded` | Check generation and embedding models, credentials, and Base URL |
-| `vector` and `hybrid` are absent | Set the embedding model, profile ID, and correct dimension together |
-| Sources remain pending | Enable the scheduler or call `/v1/memory/flush` |
-| Existing data disappears | Restore the previous database URL or `POWERCONTEXT_HOME` |
+| Dashboard is empty | Compare the complete Dashboard and Agent Scope strings |
+| `ready` is `degraded` | Check the Generation and Embedding models, keys, and Base URLs |
+| No `vector` or `hybrid` search | Configure the Embedding model, profile ID, and dimension together |
+| Sources remain pending | Enable the Scheduler or call `/v1/memory/flush` |
+| Existing data is missing | Restore the previous database URL or `POWERCONTEXT_HOME` |
 
-See [Troubleshoot](troubleshoot.md) for error states and [Configuration](../reference/configuration.md) for all variables.
+See [Troubleshooting](troubleshoot.md) for error states and [Configuration](../reference/configuration.md) for all
+variables.

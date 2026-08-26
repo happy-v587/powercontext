@@ -249,7 +249,7 @@ def init_command(
     if output.exists() and not force:
         _fail(f"{output} already exists; use --force")
     try:
-        configuration = collect_configuration(current=None, advanced=advanced)
+        configuration = collect_configuration(advanced=advanced)
         validate_configuration(configuration)
         _print_summary(configuration)
         if not typer.confirm(f"Write {output}?", default=True):
@@ -314,18 +314,15 @@ def _print_summary(configuration: GeneratedConfiguration) -> None:
 
 def collect_configuration(
     *,
-    current: GeneratedConfiguration | None,
     advanced: bool = False,
 ) -> GeneratedConfiguration:
     """Collect a short task-oriented configuration."""
 
     typer.secho("\nPowerContext configuration", bold=True, fg=typer.colors.CYAN)
     typer.echo("Press Enter to accept a default. Provider details are derived from the API protocol.\n")
-    scope_id = typer.prompt("Scope ID", default=current.scope_id if current else "project:quickstart").strip()
-    display_name = typer.prompt(
-        "Dashboard display name", default=current.display_name if current else "Quick Start"
-    ).strip()
-    generation = _collect_connection("generation", current.generation if current else None)
+    scope_id = typer.prompt("Scope ID", default="project:quickstart").strip()
+    display_name = typer.prompt("Dashboard display name", default="Quick Start").strip()
+    generation = _collect_connection("generation")
     generation_protocol = _protocol_for_model(generation.model)
     can_reuse = generation_protocol is not None and generation_protocol.embedding_adapter is not None
     reuse = can_reuse and typer.confirm("Use this API connection for Embedding?", default=True)
@@ -338,14 +335,12 @@ def collect_configuration(
             environment=generation.environment,
         )
     else:
-        embedding = _collect_connection("embedding", current.embedding if current else None)
-    dimension = typer.prompt("Embedding dimension", default=current.embedding_dimension if current else 1536, type=int)
+        embedding = _collect_connection("embedding")
+    dimension = typer.prompt("Embedding dimension", default=1536, type=int)
     profile = _profile_id(embedding.model, dimension)
     if advanced:
-        database_kind, database_url, database_path = _collect_database(current)
-        schedule = typer.prompt(
-            "Source processing interval in seconds", default=current.schedule_seconds if current else 60, type=int
-        )
+        database_kind, database_url, database_path = _collect_database()
+        schedule = typer.prompt("Source processing interval in seconds", default=60, type=int)
     else:
         database_kind, database_url, database_path = "sqlite", None, None
         schedule = 60
@@ -431,7 +426,7 @@ def update_environment_document(content: str, configuration: GeneratedConfigurat
 
 
 def configuration_from_document(content: str) -> GeneratedConfiguration:
-    """Recover editable state from a generated or compatible environment document."""
+    """Load configuration state from an environment document for validation."""
 
     values = parse_environment(content)
     metadata = _managed_metadata(content)
@@ -504,7 +499,6 @@ def write_environment(path: Path, content: str, *, backup: bool) -> Path | None:
 
 def _collect_connection(
     role: str,
-    current: ModelSelection | None,
 ) -> ModelSelection:
     title = role.title()
     available = tuple(
@@ -512,36 +506,27 @@ def _collect_connection(
         for protocol in API_PROTOCOLS
         if (protocol.generation_adapter if role == "generation" else protocol.embedding_adapter) is not None
     )
-    current_protocol = _protocol_for_model(current.model, role) if current is not None else None
-    default = current_protocol.identifier if current_protocol is not None else available[0].identifier
+    default = available[0].identifier
     protocol_id = _select_value(
         f"{title} API protocol",
         (*((protocol.identifier, protocol.label) for protocol in available), ("custom", "Advanced / custom adapter")),
         default,
     )
     if protocol_id == "custom":
-        return _collect_custom_connection(title, current)
+        return _collect_custom_connection(title)
 
     protocol = _PROTOCOL_BY_ID[protocol_id]
     adapter = protocol.generation_adapter if role == "generation" else protocol.embedding_adapter
     if adapter is None:
         raise ConfigError(f"{protocol.label} does not support {role}")  # noqa: TRY003
-    current_values = {variable.name: variable.value for variable in current.environment} if current else {}
     base_url = typer.prompt(
         f"{title} API Base URL",
-        default=current_values.get(protocol.base_url_name, protocol.default_base_url),
+        default=protocol.default_base_url,
     ).strip()
-    existing_key = current_values.get(protocol.credential_name)
-    key_prompt = f"{title} API key" + (
-        " (Enter to keep existing)" if existing_key else " (optional for local services)"
-    )
-    api_key = typer.prompt(key_prompt, default="", hide_input=True, show_default=False).strip() or existing_key
-    _, separator, current_name = current.model.partition(":") if current is not None else ("", "", "")
-    default_model = (
-        current_name
-        if separator
-        else (protocol.default_generation_model if role == "generation" else protocol.default_embedding_model)
-    )
+    api_key = typer.prompt(
+        f"{title} API key (optional for local services)", default="", hide_input=True, show_default=False
+    ).strip()
+    default_model = protocol.default_generation_model if role == "generation" else protocol.default_embedding_model
     model_name = typer.prompt(f"{title} model", default=default_model or "model-name").strip()
     environment = [ProviderVariable(protocol.base_url_name, base_url)]
     if api_key:
@@ -549,28 +534,24 @@ def _collect_connection(
     return ModelSelection(model=f"{adapter}:{model_name}", environment=tuple(environment))
 
 
-def _collect_custom_connection(role: str, current: ModelSelection | None) -> ModelSelection:
-    reference_model = current.model if current is not None else "openai-chat:model-name"
+def _collect_custom_connection(role: str) -> ModelSelection:
+    reference_model = "openai-chat:model-name"
     typer.echo("Advanced mode uses a complete Pydantic AI provider:model identifier.")
     typer.echo(f"Reference: {MODEL_CONFIGURATION_URL}")
     model = typer.prompt(f"{role} model identifier", default=reference_model).strip()
     shared: dict[str, str] = {}
-    variables = _collect_initial_provider_variables(role, model, current, shared)
-    _collect_additional_provider_variables(role, current, shared, variables)
+    variables = _collect_initial_provider_variables(role, model, shared)
+    _collect_additional_provider_variables(role, shared, variables)
     return ModelSelection(model=model, environment=tuple(variables))
 
 
 def _collect_initial_provider_variables(
     role: str,
     reference_model: str,
-    current: ModelSelection | None,
     shared: dict[str, str],
 ) -> list[ProviderVariable]:
-    current_variables = current.environment if current is not None else ()
-    credential = next((variable for variable in current_variables if _is_secret_name(variable.name)), None)
-    base_url = next((variable for variable in current_variables if _is_base_url_name(variable.name)), None)
-    credential_default = credential.name if credential is not None else _suggested_credential_name(reference_model)
-    base_url_default = base_url.name if base_url is not None else _suggested_base_url_name(reference_model)
+    credential_default = _suggested_credential_name(reference_model)
+    base_url_default = _suggested_base_url_name(reference_model)
     variables: list[ProviderVariable] = []
     for label, default_name in (
         ("credential", credential_default),
@@ -579,14 +560,7 @@ def _collect_initial_provider_variables(
         name = _prompt_provider_variable_name(role, label, default_name)
         if name is None:
             continue
-        variable = _collect_provider_variable(role, name, current, shared)
-        if variable is not None:
-            variables.append(variable)
-    selected_names = {variable.name for variable in variables}
-    for existing in current_variables:
-        if existing.name in selected_names or existing in {credential, base_url}:
-            continue
-        variable = _collect_provider_variable(role, existing.name, current, shared)
+        variable = _collect_provider_variable(role, name, shared)
         if variable is not None:
             variables.append(variable)
     return variables
@@ -594,7 +568,6 @@ def _collect_initial_provider_variables(
 
 def _collect_additional_provider_variables(
     role: str,
-    current: ModelSelection | None,
     shared: dict[str, str],
     variables: list[ProviderVariable],
 ) -> None:
@@ -612,7 +585,7 @@ def _collect_additional_provider_variables(
         if name in {variable.name for variable in variables}:
             typer.echo(f"{name} is already configured.", err=True)
             continue
-        variable = _collect_provider_variable(role, name, current, shared)
+        variable = _collect_provider_variable(role, name, shared)
         if variable is not None:
             variables.append(variable)
 
@@ -634,27 +607,17 @@ def _prompt_provider_variable_name(role: str, label: str, default: str | None) -
 def _collect_provider_variable(
     role: str,
     name: str,
-    current: ModelSelection | None,
     shared: dict[str, str],
 ) -> ProviderVariable | None:
     if name in shared:
         typer.echo(f"Reusing {name} for {role}.")
         return ProviderVariable(name, shared[name])
-    existing = (
-        next((variable.value for variable in current.environment if variable.name == name), None)
-        if current is not None
-        else None
-    )
-    prompt = name + (" (Enter to keep existing)" if existing is not None else "")
-    value = (
-        typer.prompt(
-            prompt,
-            default="",
-            hide_input=_is_secret_name(name),
-            show_default=False,
-        ).strip()
-        or existing
-    )
+    value = typer.prompt(
+        name,
+        default="",
+        hide_input=_is_secret_name(name),
+        show_default=False,
+    ).strip()
     if value is None:
         return None
     shared[name] = value
@@ -682,13 +645,12 @@ def _is_base_url_name(name: str) -> bool:
     return name.endswith(("_BASE_URL", "_ENDPOINT", "_ENDPOINT_URL"))
 
 
-def _protocol_for_model(model: str, role: str = "generation") -> ApiProtocol | None:
+def _protocol_for_model(model: str) -> ApiProtocol | None:
     adapter, separator, _name = model.partition(":")
     if not separator:
         return None
     for protocol in API_PROTOCOLS:
-        expected = protocol.generation_adapter if role == "generation" else protocol.embedding_adapter
-        if adapter == expected:
+        if adapter in {protocol.generation_adapter, protocol.embedding_adapter}:
             return protocol
     return None
 
@@ -711,26 +673,22 @@ def _select_value(prompt: str, choices: Sequence[tuple[str, str]], default: str)
     return values[selected - 1]
 
 
-def _collect_database(current: GeneratedConfiguration | None) -> tuple[str, str | None, str | None]:
+def _collect_database() -> tuple[str, str | None, str | None]:
     choices = ("sqlite", "oceanbase", "seekdb")
     labels = ("SQLite", "OceanBase", "embedded seekDB")
-    default = current.database_kind if current is not None else "sqlite"
-    kind = choices[_choose("Database", labels, choices.index(default) + 1) - 1]
+    kind = choices[_choose("Database", labels, 1) - 1]
     if kind == "oceanbase":
-        existing = current.database_url if current is not None and current.database_kind == kind else None
         value = typer.prompt(
-            "OceanBase SQLAlchemy URL" + (" (Enter to keep existing)" if existing else ""),
+            "OceanBase SQLAlchemy URL",
             default="",
             hide_input=True,
             show_default=False,
         ).strip()
-        return kind, value or existing, None
+        return kind, value or None, None
     if kind == "seekdb":
-        existing = current.database_path if current is not None and current.database_kind == kind else None
-        value = typer.prompt("seekDB path (empty uses user data directory)", default=existing or "").strip()
+        value = typer.prompt("seekDB path (empty uses user data directory)", default="").strip()
         return kind, None, value or None
-    existing = current.database_url if current is not None and current.database_kind == kind else None
-    value = typer.prompt("SQLite URL (empty uses user data database)", default=existing or "").strip()
+    value = typer.prompt("SQLite URL (empty uses user data database)", default="").strip()
     return kind, value or None, None
 
 
