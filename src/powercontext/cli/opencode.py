@@ -21,13 +21,17 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
+from urllib.error import URLError
 from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 from uuid import uuid4
 
 from powercontext.cli.git_source import InvalidGitHubSourceError, clone_github_source, github_clone_url
@@ -46,6 +50,7 @@ _VERSION = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)")
 _COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
 _ACTIVATION_PROBE_PATH = "POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"
 _ACTIVATION_PROBE_NONCE = "POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"
+_ACTIVATION_PROBE_TIMEOUT = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,9 +95,10 @@ def install_opencode_plugin(*, source: str, ref: str) -> OpenCodeSetupResult:
     require_complete_plugin(plugin_dir)
     config_dir = opencode_config_dir()
     plugin_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}.js"
-    _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
     skill_target = config_dir / "skills" / "project-context"
+    require_replaceable_plugin(plugin_target)
     require_replaceable_skill(skill_target)
+    _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
     _install_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target)
     return OpenCodeSetupResult(
         plugin=OPENCODE_PLUGIN_NAME,
@@ -160,6 +166,11 @@ def require_replaceable_skill(target: Path) -> None:
         raise SetupError.opencode_skill_conflict(target)
 
 
+def require_replaceable_plugin(target: Path) -> None:
+    if target.exists() and not _owned_plugin(target):
+        raise SetupError.opencode_plugin_conflict(target)
+
+
 def _install_skill(source: Path, target: Path) -> None:
     require_replaceable_skill(target)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -214,8 +225,7 @@ def _owned_plugin(path: Path) -> bool:
 
 
 def _install_plugin(source: Path, target: Path) -> None:
-    if target.exists() and not _owned_plugin(target):
-        raise SetupError.opencode_plugin_conflict(target)
+    require_replaceable_plugin(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.tmp"
     manifest = _plugin_manifest_path(target)
@@ -378,24 +388,20 @@ def _probe_plugin_activation() -> tuple[str, bool]:
     token = uuid4().hex
     with tempfile.TemporaryDirectory(prefix="powercontext-opencode-probe-") as directory:
         path = Path(directory) / "active"
-        project = Path(directory) / "project"
-        project.mkdir()
+        port = _available_local_port()
         output = _run_opencode("debug", "config")
         command = [
             opencode_executable(),
-            "run",
-            "--dir",
-            str(project),
-            "--model",
-            "invalid/model",
-            "PowerContext plugin activation probe",
-            "--format",
-            "json",
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            str(port),
         ]
         try:
             # `debug config` only resolves configuration and does not load plugins.
-            # Run a model-free failing request so OpenCode initializes the plugin
-            # lifecycle without requiring provider credentials or a live Server.
+            # Start a short-lived headless server so OpenCode initializes the plugin
+            # lifecycle without creating a session or invoking a model.
             _run_opencode_probe(
                 command,
                 {
@@ -413,19 +419,51 @@ def _probe_plugin_activation() -> tuple[str, bool]:
 
 
 def _run_opencode_probe(command: list[str], env: dict[str, str]) -> None:
+    process: subprocess.Popen[str] | None = None
     try:
-        subprocess.run(  # noqa: S603 - command uses the fixed OpenCode executable and literal arguments.
+        process = subprocess.Popen(  # noqa: S603 - command uses the fixed OpenCode executable and literal arguments.
             command,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
             env=os.environ | env,
         )
+        port = int(command[command.index("--port") + 1])
+        deadline = time.monotonic() + _ACTIVATION_PROBE_TIMEOUT
+        probe_path = Path(env[_ACTIVATION_PROBE_PATH])
+        nonce = env[_ACTIVATION_PROBE_NONCE]
+        while time.monotonic() < deadline:
+            if probe_path.exists():
+                try:
+                    if probe_path.read_text(encoding="utf-8") == nonce:
+                        return
+                except OSError:
+                    pass
+            if process.poll() is not None:
+                return
+            try:
+                with urlopen(f"http://127.0.0.1:{port}/session", timeout=1) as response:
+                    response.read(1)
+            except (OSError, URLError):
+                pass
+            time.sleep(0.05)
+        raise subprocess.TimeoutExpired(command, _ACTIVATION_PROBE_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as error:
         raise SetupError.command_unavailable(command, error) from error
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def _available_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
 
 
 def _run_opencode(*arguments: str, env: dict[str, str] | None = None) -> str:

@@ -167,6 +167,36 @@ def test_setup_opencode_refuses_unowned_skill(tmp_path: Path, monkeypatch) -> No
     assert result.exit_code == 1
     assert "is not owned by PowerContext" in result.output
     assert (target / "SKILL.md").read_text(encoding="utf-8") == "user-owned\n"
+    assert not (config / "plugins" / "powercontext-opencode.js").exists()
+    assert not (config / "plugins" / ".powercontext-opencode.json").exists()
+
+
+def test_activation_probe_uses_headless_server_without_model(tmp_path: Path, monkeypatch) -> None:
+    import powercontext.cli.opencode as opencode_cli
+
+    plugin = _write_plugin(tmp_path / "checkout")
+    config = tmp_path / "config"
+    observed: list[list[str]] = []
+
+    monkeypatch.setattr(opencode_cli, "which", lambda _name: "/usr/bin/opencode")
+    monkeypatch.setattr(opencode_cli, "_run_opencode", _fake_opencode(plugin, config))
+
+    def probe(command: list[str], env: dict[str, str]) -> None:
+        observed.append(command)
+        Path(env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_PATH"]).write_text(
+            env["POWERCONTEXT_OPENCODE_ACTIVATION_PROBE_NONCE"], encoding="utf-8"
+        )
+
+    monkeypatch.setattr(opencode_cli, "_run_opencode_probe", probe)
+
+    output, activated = opencode_cli._probe_plugin_activation()
+
+    assert json.loads(output)["plugin"]
+    assert activated
+    assert len(observed) == 1
+    assert observed[0][:5] == ["/usr/bin/opencode", "serve", "--hostname", "127.0.0.1", "--port"]
+    assert int(observed[0][5]) > 0
+    assert "--model" not in observed[0]
 
 
 def test_setup_opencode_requires_built_bundle(tmp_path: Path, monkeypatch) -> None:
