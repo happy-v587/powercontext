@@ -123,18 +123,32 @@ curl -X POST http://127.0.0.1:8000/v1/memory/flush \
   -d '{"scope_id":"project:quickstart"}'
 ```
 
-Expect `"status":"processed"` and `"processed_source_count":1`. Confirm the inventory:
+The flush response contains `previous_cursor` and `current_cursor`. When `current_cursor` is greater than
+`previous_cursor`, Sources were processed. Extraction may produce zero candidates depending on the content, so do not
+assume a specific count.
+
+Confirm the inventory and verify Embedding by searching with vector mode:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/memory/search \
+  -H 'content-type: application/json' \
+  -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector"}'
+```
+
+A non-empty `hits` list confirms the Embedding model produced vectors. An empty list with `"status":"ok"` on
+`powercontext ready` means FTS-only fallback is active (Embedding model or profile not configured).
+
+Finally, check the stats for model usage:
 
 ```bash
 powercontext stats --scope-id project:quickstart
 ```
 
 ```text
-Sources: 1 total, 1 memory processed, 0 memory pending
-Memory entries: 1 total, 1 active, 0 inactive
+Embedding: 1 requests, ...
 ```
 
-At least one active Memory entry means Generation and Embedding both work end to end.
+A non-zero Embedding request count confirms the model was called end to end.
 
 ### Part 3: Start a Coding Agent
 

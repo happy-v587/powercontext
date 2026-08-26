@@ -191,6 +191,23 @@ def test_init_records_generated_credential_names_for_show_redaction(
     assert "AWS_PROFILE=development" in shown.output
 
 
+def test_collect_provider_variable_hides_input_for_credential_names() -> None:
+    from unittest.mock import patch
+
+    captured: dict[str, object] = {}
+
+    def _capturing_prompt(text: str, **kwargs: object) -> str:  # type: ignore[override]
+        captured.update(kwargs)
+        return "secret-value"
+
+    with patch("powercontext.cli.config.typer.prompt", _capturing_prompt):
+        result = config_cli._collect_provider_variable("generation", "SERVICE_CREDENTIAL", {}, is_credential=True)
+
+    assert result is not None
+    assert result.value == "secret-value"
+    assert captured.get("hide_input") is True
+
+
 def _configuration(
     *,
     generation: config_cli.ModelSelection | None = None,

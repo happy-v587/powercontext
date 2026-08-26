@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SENTINEL = "\x00"
 
 
 class EnvironmentFileError(ValueError):
@@ -48,7 +49,8 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
         if stripped.startswith("export "):
             stripped = stripped.removeprefix("export ").lstrip()
         try:
-            tokens = shlex.split(_strip_comment(stripped), posix=True)
+            processed = _replace_escaped_spaces(stripped)
+            tokens = shlex.split(_strip_comment(processed), posix=True)
         except ValueError as error:
             raise EnvironmentFileError(  # noqa: TRY003
                 f"invalid assignment at {source}:{line_number}: {error}"
@@ -58,6 +60,7 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
         if len(tokens) != 1 or "=" not in tokens[0]:
             raise EnvironmentFileError(f"invalid assignment at {source}:{line_number}")  # noqa: TRY003
         name, value = tokens[0].split("=", maxsplit=1)
+        value = value.replace(_SENTINEL, " ")
         if _ENVIRONMENT_NAME.fullmatch(name) is None:
             raise EnvironmentFileError(  # noqa: TRY003
                 f"invalid environment name at {source}:{line_number}: {name!r}"
@@ -71,7 +74,12 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
 
 
 def _strip_comment(line: str) -> str:
-    """Remove a trailing comment while preserving ``#`` inside values and quotes."""
+    """Remove a trailing comment while preserving ``#`` inside values and quotes.
+
+    A ``#`` only starts a comment at an unquoted word boundary. A preceding
+    backslash escapes the immediately following character, so
+    ``TOKEN=abc\\ #123`` keeps its full value.
+    """
 
     quote = ""
     escaped = False
@@ -88,6 +96,44 @@ def _strip_comment(line: str) -> str:
         elif character == "#" and (index == 0 or line[index - 1] in {" ", "\t"}):
             return line[:index]
     return line
+
+
+def _replace_escaped_spaces(line: str) -> str:
+    """Replace ``\\ `` (backslash-space) with a sentinel that survives ``shlex.split``."""
+
+    result: list[str] = []
+    quote = ""
+    escaped = False
+    chars = list(line)
+    index = 0
+    while index < len(chars):
+        character = chars[index]
+        if escaped:
+            escaped = False
+            result.append(character)
+        elif quote:
+            if character == "\\" and quote == '"':
+                escaped = True
+                result.append(character)
+            elif character == quote:
+                quote = ""
+                result.append(character)
+            else:
+                result.append(character)
+        elif character == "\\":
+            next_index = index + 1
+            if next_index < len(chars) and chars[next_index] == " ":
+                result.append(_SENTINEL)
+                index += 2
+                continue
+            result.append(character)
+        elif character in {"'", '"'}:
+            quote = character
+            result.append(character)
+        else:
+            result.append(character)
+        index += 1
+    return "".join(result)
 
 
 def read_environment_file(path: Path) -> dict[str, str]:

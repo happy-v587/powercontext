@@ -569,7 +569,7 @@ def _collect_initial_provider_variables(
     credentials: list[str] = []
     credential_name = _prompt_provider_variable_name(role, "credential", credential_default)
     if credential_name is not None:
-        variable = _collect_provider_variable(role, credential_name, shared)
+        variable = _collect_provider_variable(role, credential_name, shared, is_credential=True)
         if variable is not None:
             variables.append(variable)
             credentials.append(credential_name)
@@ -623,6 +623,8 @@ def _collect_provider_variable(
     role: str,
     name: str,
     shared: dict[str, str],
+    *,
+    is_credential: bool = False,
 ) -> ProviderVariable | None:
     if name in shared:
         typer.echo(f"Reusing {name} for {role}.")
@@ -630,7 +632,7 @@ def _collect_provider_variable(
     value = typer.prompt(
         name,
         default="",
-        hide_input=_is_secret_name(name),
+        hide_input=_is_secret_name(name) or is_credential,
         show_default=False,
     ).strip()
     if value is None:

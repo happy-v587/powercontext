@@ -122,18 +122,31 @@ curl -X POST http://127.0.0.1:8000/v1/memory/flush \
   -d '{"scope_id":"project:quickstart"}'
 ```
 
-预期看到 `"status":"processed"` 和 `"processed_source_count":1`。再确认清单统计：
+flush 响应包含 `previous_cursor` 和 `current_cursor`。当 `current_cursor` 大于 `previous_cursor` 时，说明
+Source 已被处理。提取可能产生零个候选项（取决于内容），因此不要假设固定的 `processed_source_count`。
+
+通过向量搜索确认 Embedding 可用：
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/memory/search \
+  -H 'content-type: application/json' \
+  -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector"}'
+```
+
+返回非空 `hits` 列表说明 Embedding model 已生成向量。若返回空列表但 `powercontext ready` 显示 `status=ok`，
+则说明处于 FTS 回退模式（未配置 Embedding model 或 profile）。
+
+最后检查模型使用统计：
 
 ```bash
 powercontext stats --scope-id project:quickstart
 ```
 
 ```text
-Sources: 1 total, 1 memory processed, 0 memory pending
-Memory entries: 1 total, 1 active, 0 inactive
+Embedding: 1 requests, ...
 ```
 
-只要出现至少一条 active Memory，就说明 Generation 和 Embedding 已经端到端可用。
+Embedding 请求计数非零说明模型已端到端调用。
 
 ### 第三部分：启动 Coding Agent
 

@@ -49,6 +49,11 @@ def test_value_may_start_with_hash_like_shell() -> None:
     assert parse_environment("TOKEN=#literal\n") == {"TOKEN": "#literal"}
 
 
+def test_backslash_escaped_space_preserves_hash_value() -> None:
+    # shlex.split with posix=True strips the backslash but keeps the full value
+    assert parse_environment("TOKEN=abc\\ #123\n") == {"TOKEN": "abc #123"}
+
+
 def test_unterminated_quote_is_rejected() -> None:
     with pytest.raises(EnvironmentFileError, match="invalid assignment"):
         parse_environment('TOKEN="unterminated\n')
