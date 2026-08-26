@@ -60,7 +60,8 @@ def run(
         try:
             loaded = read_environment_file(env_file)
         except (EnvironmentFileError, OSError) as error:
-            raise typer.BadParameter(str(error), param_hint="--env-file") from error
+            typer.echo(f"Invalid value for --env-file: {error}", err=True)
+            raise typer.Exit(code=2) from error
     loaded_context = environment_context(loaded) if env_file is not None else nullcontext()
     with loaded_context:
         environment = ServerSettings()
