@@ -277,7 +277,7 @@ def test_server_command_reports_a_missing_env_file_without_starting(
     )
 
     assert result.exit_code == 2
-    assert "Invalid value for --env-file" in result.output
+    assert "Invalid value for --env-file" in (result.output + result.stderr)
     run_server.assert_not_called()
 
 
