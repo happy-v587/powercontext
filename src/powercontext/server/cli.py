@@ -16,10 +16,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
+from powercontext.cli.env_file import EnvironmentFileError, environment_context, read_environment_file
 from powercontext.server.factory import create_server_app
 from powercontext.server.logging import configure_server_logging
 from powercontext.server.settings import HttpConfig, ServerSettings
@@ -44,34 +48,46 @@ def main() -> None:
 def run(
     host: Annotated[str | None, typer.Option(help="Address to bind.")] = None,
     port: Annotated[int | None, typer.Option(min=1, max=65535, help="Port to bind.")] = None,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(help="Load Server and provider settings from this environment file."),
+    ] = None,
 ) -> None:
     """Run the ASGI service in the foreground."""
 
-    environment = ServerSettings()
-    http = HttpConfig(
-        host=environment.http.host if host is None else host,
-        port=environment.http.port if port is None else port,
-    )
-    settings = environment.model_copy(update={"http": http})
-    configure_server_logging(settings.logging)
-    tracing = configure_server_tracing(settings.tracing)
-    try:
-        application = create_server_app(settings=settings, tracing=tracing)
-        if settings.dashboard.enabled:
-            if application.state.dashboard_started:
-                typer.echo(f"PowerContext Dashboard: http://{settings.http.host}:{settings.http.port}/")
-            else:
-                typer.echo(
-                    f"PowerContext Dashboard failed to start: {application.state.dashboard_startup_error}",
-                    err=True,
-                )
-        _run_server(
-            application,
-            host=settings.http.host,
-            port=settings.http.port,
+    loaded: Mapping[str, str] = {}
+    if env_file is not None:
+        try:
+            loaded = read_environment_file(env_file)
+        except (EnvironmentFileError, OSError) as error:
+            raise typer.BadParameter(str(error), param_hint="--env-file") from error
+    loaded_context = environment_context(loaded) if env_file is not None else nullcontext()
+    with loaded_context:
+        environment = ServerSettings()
+        http = HttpConfig(
+            host=environment.http.host if host is None else host,
+            port=environment.http.port if port is None else port,
         )
-    finally:
-        tracing.shutdown()
+        settings = environment.model_copy(update={"http": http})
+        configure_server_logging(settings.logging)
+        tracing = configure_server_tracing(settings.tracing)
+        try:
+            application = create_server_app(settings=settings, tracing=tracing)
+            if settings.dashboard.enabled:
+                if application.state.dashboard_started:
+                    typer.echo(f"PowerContext Dashboard: http://{settings.http.host}:{settings.http.port}/")
+                else:
+                    typer.echo(
+                        f"PowerContext Dashboard failed to start: {application.state.dashboard_startup_error}",
+                        err=True,
+                    )
+            _run_server(
+                application,
+                host=settings.http.host,
+                port=settings.http.port,
+            )
+        finally:
+            tracing.shutdown()
 
 
 def _run_server(application: Any, *, host: str, port: int) -> None:
