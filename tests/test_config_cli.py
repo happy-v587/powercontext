@@ -96,6 +96,7 @@ def test_init_validate_and_show_round_trip_managed_environment(
     generated_text = environment.read_text(encoding="utf-8")
     assert config_cli.MANAGED_BEGIN in generated_text
     assert "# generation-environment=OPENAI_API_KEY" in generated_text
+    assert "# credentials=OPENAI_API_KEY" in generated_text
 
     validated = runner.invoke(config_cli.app, ["validate", "--env-file", str(environment)])
     shown = runner.invoke(config_cli.app, ["show", "--env-file", str(environment)])
@@ -141,10 +142,60 @@ def test_validate_reports_invalid_numeric_values_without_a_traceback(tmp_path: P
     assert "Traceback" not in result.output
 
 
+def test_show_redacts_standard_credential_container_variables(tmp_path: Path) -> None:
+    environment = tmp_path / ".env"
+    environment.write_text(
+        "OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer-demo-secret\nPLAIN=value\n",
+        encoding="utf-8",
+    )
+
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+
+    assert shown.exit_code == 0
+    assert "OTEL_EXPORTER_OTLP_HEADERS=<redacted>" in shown.output
+    assert "demo-secret" not in shown.output
+    assert "PLAIN=value" in shown.output
+
+
+def test_init_records_generated_credential_names_for_show_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    configuration = _configuration(
+        generation=config_cli.ModelSelection(
+            model="bedrock:anthropic.claude-sonnet",
+            environment=(
+                config_cli.ProviderVariable("AWS_PROFILE", "development"),
+                config_cli.ProviderVariable("SERVICE_CREDENTIAL", "custom-secret"),
+            ),
+        ),
+        embedding=config_cli.ModelSelection(
+            model="voyage:voyage-3",
+            environment=(config_cli.ProviderVariable("VOYAGE_API_KEY", "voyage-secret"),),
+        ),
+        credentials=("SERVICE_CREDENTIAL",),
+    )
+    monkeypatch.setattr(config_cli, "collect_configuration", lambda **_kwargs: configuration)
+
+    generated = CliRunner().invoke(config_cli.app, ["init", "--output", str(environment)], input="\n")
+    text = environment.read_text(encoding="utf-8")
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+
+    assert generated.exit_code == 0
+    assert "# credentials=SERVICE_CREDENTIAL" in text
+    assert config_cli.configuration_from_document(text).credentials == ("SERVICE_CREDENTIAL",)
+    assert shown.exit_code == 0
+    assert "SERVICE_CREDENTIAL=<redacted>" in shown.output
+    assert "custom-secret" not in shown.output
+    assert "AWS_PROFILE=development" in shown.output
+
+
 def _configuration(
     *,
     generation: config_cli.ModelSelection | None = None,
     embedding: config_cli.ModelSelection | None = None,
+    credentials: tuple[str, ...] = ("OPENAI_API_KEY",),
 ) -> config_cli.GeneratedConfiguration:
     shared = (config_cli.ProviderVariable("OPENAI_API_KEY", "initial-secret"),)
     return config_cli.GeneratedConfiguration(
@@ -159,4 +210,5 @@ def _configuration(
         database_url=None,
         database_path=None,
         schedule_seconds=60,
+        credentials=credentials,
     )

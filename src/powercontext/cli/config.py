@@ -33,7 +33,7 @@ from typing import Annotated, Never
 import typer
 from pydantic import ValidationError
 
-from powercontext.cli.env_file import EnvironmentFileError, parse_environment, read_environment_file
+from powercontext.cli.env_file import EnvironmentFileError, parse_environment
 
 HELP_OPTION_NAMES = ("-h", "--help")
 MANAGED_BEGIN = "# >>> powercontext managed configuration >>>"
@@ -77,6 +77,7 @@ class GeneratedConfiguration:
     database_url: str | None
     database_path: str | None
     schedule_seconds: int
+    credentials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,7 @@ _SECRET_NAMES = {
     "POWERCONTEXT_SERVER_AUTH_TOKEN",
     "POWERCONTEXT_CLIENT_API_TOKEN",
 }
+_CREDENTIAL_CONTAINER_SUFFIXES = ("_HEADERS", "_HEADER", "_COOKIES", "_COOKIE")
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ASSIGNMENT_NAME = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
 
@@ -271,11 +273,14 @@ def show_command(
     """Print effective assignments with credentials redacted."""
 
     try:
-        values = read_environment_file(env_file)
+        content = env_file.read_text(encoding="utf-8")
+        values = parse_environment(content, source=str(env_file))
+        recorded = _managed_metadata(content).get("credentials", "")
     except (EnvironmentFileError, OSError) as error:
         _fail(str(error))
+    recorded_credentials = {name for name in recorded.split(",") if name}
     for name in sorted(values):
-        value = "<redacted>" if _is_secret_name(name) else values[name]
+        value = "<redacted>" if _is_secret_name(name) or name in recorded_credentials else values[name]
         typer.echo(f"{name}={value}")
 
 
@@ -322,7 +327,7 @@ def collect_configuration(
     typer.echo("Press Enter to accept a default. Provider details are derived from the API protocol.\n")
     scope_id = typer.prompt("Scope ID", default="project:quickstart").strip()
     display_name = typer.prompt("Dashboard display name", default="Quick Start").strip()
-    generation = _collect_connection("generation")
+    generation, generation_credentials = _collect_connection("generation")
     generation_protocol = _protocol_for_model(generation.model)
     can_reuse = generation_protocol is not None and generation_protocol.embedding_adapter is not None
     reuse = can_reuse and typer.confirm("Use this API connection for Embedding?", default=True)
@@ -334,8 +339,9 @@ def collect_configuration(
             model=f"{generation_protocol.embedding_adapter}:{embedding_model}",
             environment=generation.environment,
         )
+        embedding_credentials = generation_credentials
     else:
-        embedding = _collect_connection("embedding")
+        embedding, embedding_credentials = _collect_connection("embedding")
     dimension = typer.prompt("Embedding dimension", default=1536, type=int)
     profile = _profile_id(embedding.model, dimension)
     if advanced:
@@ -356,6 +362,7 @@ def collect_configuration(
         database_url=database_url,
         database_path=database_path,
         schedule_seconds=schedule,
+        credentials=tuple(dict.fromkeys(generation_credentials + embedding_credentials)),
     )
 
 
@@ -389,11 +396,13 @@ def render_environment(configuration: GeneratedConfiguration) -> dict[str, str]:
 def render_managed_block(configuration: GeneratedConfiguration) -> str:
     """Render one versioned managed block."""
 
-    metadata = (
+    metadata = [
         f"# config-version={configuration.config_version}",
         f"# generation-environment={_environment_names(configuration.generation)}",
         f"# embedding-environment={_environment_names(configuration.embedding)}",
-    )
+    ]
+    if configuration.credentials:
+        metadata.append(f"# credentials={','.join(configuration.credentials)}")
     assignments = tuple(f"{name}={shlex.quote(value)}" for name, value in render_environment(configuration).items())
     return "\n".join((MANAGED_BEGIN, *metadata, *assignments, MANAGED_END, ""))
 
@@ -453,6 +462,7 @@ def configuration_from_document(content: str) -> GeneratedConfiguration:
             values.get("POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS", "60"),
             "POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS",
         ),
+        credentials=tuple(name for name in metadata.get("credentials", "").split(",") if name),
     )
 
 
@@ -499,7 +509,7 @@ def write_environment(path: Path, content: str, *, backup: bool) -> Path | None:
 
 def _collect_connection(
     role: str,
-) -> ModelSelection:
+) -> tuple[ModelSelection, tuple[str, ...]]:
     title = role.title()
     available = tuple(
         protocol
@@ -513,7 +523,8 @@ def _collect_connection(
         default,
     )
     if protocol_id == "custom":
-        return _collect_custom_connection(title)
+        model, variables, credentials = _collect_custom_connection(title)
+        return ModelSelection(model=model, environment=tuple(variables)), credentials
 
     protocol = _PROTOCOL_BY_ID[protocol_id]
     adapter = protocol.generation_adapter if role == "generation" else protocol.embedding_adapter
@@ -529,41 +540,45 @@ def _collect_connection(
     default_model = protocol.default_generation_model if role == "generation" else protocol.default_embedding_model
     model_name = typer.prompt(f"{title} model", default=default_model or "model-name").strip()
     environment = [ProviderVariable(protocol.base_url_name, base_url)]
+    credentials: tuple[str, ...] = ()
     if api_key:
         environment.append(ProviderVariable(protocol.credential_name, api_key))
-    return ModelSelection(model=f"{adapter}:{model_name}", environment=tuple(environment))
+        credentials = (protocol.credential_name,)
+    return ModelSelection(model=f"{adapter}:{model_name}", environment=tuple(environment)), credentials
 
 
-def _collect_custom_connection(role: str) -> ModelSelection:
+def _collect_custom_connection(role: str) -> tuple[str, list[ProviderVariable], tuple[str, ...]]:
     reference_model = "openai-chat:model-name"
     typer.echo("Advanced mode uses a complete Pydantic AI provider:model identifier.")
     typer.echo(f"Reference: {MODEL_CONFIGURATION_URL}")
     model = typer.prompt(f"{role} model identifier", default=reference_model).strip()
     shared: dict[str, str] = {}
-    variables = _collect_initial_provider_variables(role, model, shared)
+    variables, credentials = _collect_initial_provider_variables(role, model, shared)
     _collect_additional_provider_variables(role, shared, variables)
-    return ModelSelection(model=model, environment=tuple(variables))
+    return model, variables, credentials
 
 
 def _collect_initial_provider_variables(
     role: str,
     reference_model: str,
     shared: dict[str, str],
-) -> list[ProviderVariable]:
+) -> tuple[list[ProviderVariable], tuple[str, ...]]:
     credential_default = _suggested_credential_name(reference_model)
     base_url_default = _suggested_base_url_name(reference_model)
     variables: list[ProviderVariable] = []
-    for label, default_name in (
-        ("credential", credential_default),
-        ("Base URL", base_url_default),
-    ):
-        name = _prompt_provider_variable_name(role, label, default_name)
-        if name is None:
-            continue
-        variable = _collect_provider_variable(role, name, shared)
+    credentials: list[str] = []
+    credential_name = _prompt_provider_variable_name(role, "credential", credential_default)
+    if credential_name is not None:
+        variable = _collect_provider_variable(role, credential_name, shared)
         if variable is not None:
             variables.append(variable)
-    return variables
+            credentials.append(credential_name)
+    base_url_name = _prompt_provider_variable_name(role, "Base URL", base_url_default)
+    if base_url_name is not None:
+        variable = _collect_provider_variable(role, base_url_name, shared)
+        if variable is not None:
+            variables.append(variable)
+    return variables, tuple(credentials)
 
 
 def _collect_additional_provider_variables(
@@ -764,7 +779,12 @@ def _required(values: Mapping[str, str], name: str) -> str:
 
 
 def _is_secret_name(name: str) -> bool:
-    return name in _SECRET_NAMES or name.endswith(("_KEY", "_PASSWORD", "_SECRET", "_TOKEN")) or "_KEY_" in name
+    return (
+        name in _SECRET_NAMES
+        or name.endswith(("_KEY", "_PASSWORD", "_SECRET", "_TOKEN"))
+        or "_KEY_" in name
+        or name.endswith(_CREDENTIAL_CONTAINER_SUFFIXES)
+    )
 
 
 def _parse_integer(value: str, name: str) -> int:

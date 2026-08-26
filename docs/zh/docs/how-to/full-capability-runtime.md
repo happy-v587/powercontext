@@ -5,6 +5,23 @@ description: 5 分钟启动 PowerContext 完整功能。
 
 # 完整功能 Quick Start
 
+## 最小运行与完整能力的差别
+
+不带任何配置执行 `powercontext server run`，得到的是最小 Server：进程可以启动、可以接收 Source，但依赖模型的
+能力默认关闭。通过 `config init` 引导生成的一份 `.env` 可以把全部能力打开：
+
+| 能力 | 默认最小运行 | 完整能力运行 |
+| --- | --- | --- |
+| Source 采集 | 启用 | 启用 |
+| Memory 提取 | 关闭；Source 保持 pending | 启用；Scheduler 每 60 秒处理一次 |
+| 搜索模式 | 仅 `auto, fts` | `auto, fts, vector, hybrid` |
+| Dashboard Scope | 未配置 | 可见 `project:quickstart` |
+| MCP 端点 | `/mcp` 启用 | `/mcp` 启用 |
+
+两种模式默认都使用 SQLite。向量搜索额外使用内置的 `sqlite-vec` 扩展；当 Embedding model 或其 profile 未配置时，
+Server 会回退到 SQLite FTS 并报告 `Search modes: auto, fts`。此时召回仍然可用，但语义搜索和混合搜索需要配置
+Embedding model。
+
 ## 先确定 Scope ID
 
 Scope ID 是 PowerContext 的数据命名空间，可以把它理解成“项目 ID”。Source、Memory 和 Handoff 都归属于某个
@@ -47,7 +64,11 @@ uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/pow
 powercontext config init --output .env
 ```
 
-生成完成后会列出 Codex、Claude Code、DeepSeek Harness、OpenCode 和 Pi 的全部 setup 与启动命令。
+生成完成后会列出 Codex、Claude Code、DeepSeek Harness、OpenCode 和 Pi 的全部 setup 与启动命令。生成的 `.env`
+按组写入了原本需要手工拼装的配置：Server HTTP、Dashboard、Scope、Generation model、Embedding model（含
+profile ID 与维度）、数据库类型与位置、调度间隔，以及各宿主集成 URL。随时可以用
+`powercontext config show --env-file .env` 查看（凭据显示为 `<redacted>`），用
+`powercontext config validate --env-file .env` 校验语法和模型配置。
 
 #### 3. 启动 Server
 
@@ -63,28 +84,80 @@ powercontext server run --env-file .env
 set -a
 . ./.env
 set +a
+powercontext doctor
 powercontext ready
 powercontext capabilities
 ```
 
-只需要确认下面三项：
+确认输出包含：
 
 ```text
+package: ok - powercontext <version>
+server liveness: ok - http://127.0.0.1:8000 status=ok
+server readiness: ok - http://127.0.0.1:8000 status=ready
 Status: ready
 Memory extraction: enabled
 Search modes: auto, fts, vector, hybrid
 ```
 
-看到 `Status: ready`、`Memory extraction: enabled` 和四种搜索模式，同时 Dashboard 中存在 `Quick Start`，说明完整功能已经启动。
+`doctor` 全部检查为 `ok`、`Status: ready`、`Memory extraction: enabled`、四种搜索模式齐全，并且
+<http://127.0.0.1:8000/> 的 Dashboard 中存在 `Quick Start`，说明完整功能已经启动。
 
-### 第二部分：启动 Coding Agent
+### 第二部分：验证 Memory 闭环
+
+提取发生在 Source flush 时，因此在启动 Coding Agent 前，先验证一次完整闭环。在加载了同一环境变量的终端里，
+写入一条 Source：
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/sources/content \
+  -H 'content-type: application/json' \
+  -d '{"scope_id":"project:quickstart","source_id":"quickstart-1","content":"PowerContext quick start check: prefer small, verifiable steps."}'
+```
+
+Server 返回 `202` 和 `"status":"accepted"`。然后 flush 该 Scope，这一步会执行 Memory 提取：
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/memory/flush \
+  -H 'content-type: application/json' \
+  -d '{"scope_id":"project:quickstart"}'
+```
+
+预期看到 `"status":"processed"` 和 `"processed_source_count":1`。再确认清单统计：
+
+```bash
+powercontext stats --scope-id project:quickstart
+```
+
+```text
+Sources: 1 total, 1 memory processed, 0 memory pending
+Memory entries: 1 total, 1 active, 0 inactive
+```
+
+只要出现至少一条 active Memory，就说明 Generation 和 Embedding 已经端到端可用。
+
+### 第三部分：启动 Coding Agent
 
 Config Generator 已经打印全部受支持 Coding Agent 的 setup 和启动命令。新开一个终端，找到要使用的 Agent，复制它下面
 的两行即可；第一行安装 PowerContext 集成，第二行加载刚生成的 `.env` 并启动 Agent，因此不需要再次填写 Scope ID。
 
 Coding Agent 启动后，在项目中发送一条普通 prompt。集成会先从 `project:quickstart` 召回相关 Memory，再把本轮 prompt
-保存为 Source；Scheduler 最多等待 60 秒后尝试从 Source 提取 Memory。刷新 Dashboard，即可从同一个 Scope 查看数据。
+保存为 Source；Scheduler 会在大约 60 秒内从新 Source 提取 Memory，因此第二部分的 flush 只需做一次用于验证闭环。
 
+## 数据存在哪里
+
+生成的配置不指定数据库位置，因此 Server 把数据保存在用户数据目录，而不是项目内文件。在未设置
+`POWERCONTEXT_HOME` 时，SQLite 的 `powercontext.db` 与调度状态的 `scheduler.db` 位于：
+
+- macOS：`~/Library/Application Support/powercontext/`
+- Linux：`~/.local/share/powercontext/`
+
+如需迁移，在启动 Server 前设置 `POWERCONTEXT_HOME` 即可。之后再修改数据库 URL 会把 Server 指向另一个（可能是
+空的）数据库；需要旧数据时请保留原来的值。
+
+## 停止与恢复
+
+在 Server 终端按 `Ctrl+C` 停止进程。数据持久保存在 SQLite 中，重启不会丢失。恢复时重新加载同一个 `.env`，再次
+执行 `powercontext server run --env-file .env`；pending 的 Source 会在下一次调度或 flush 时继续处理。
 
 ## 快速排障
 
@@ -92,7 +165,7 @@ Coding Agent 启动后，在项目中发送一条普通 prompt。集成会先从
 | --- | --- |
 | Dashboard 为空 | 对比 Dashboard 与 Agent 的完整 scope 字符串 |
 | `ready` 为 `degraded` | 检查 Generation、Embedding 的模型、密钥和 Base URL |
-| 没有 `vector`、`hybrid` | 同时配置 Embedding model、profile ID 和正确维度 |
+| 没有 `vector`、`hybrid` | 同时配置 Embedding model、profile ID 和正确维度；未配置时召回保持 FTS（`auto, fts`） |
 | Source 一直 pending | 启用 scheduler，或调用 `/v1/memory/flush` |
 | 原有数据不见了 | 恢复之前的数据库 URL 或 `POWERCONTEXT_HOME` |
 

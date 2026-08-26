@@ -31,7 +31,14 @@ class EnvironmentFileError(ValueError):
 
 
 def parse_environment(content: str, *, source: str = "environment") -> dict[str, str]:
-    """Parse simple shell-compatible assignments without evaluating shell code."""
+    """Parse simple shell-compatible assignments without evaluating shell code.
+
+    A ``#`` only starts a comment at an unquoted word boundary, so values such as
+    ``TOKEN=abc#123`` keep their full content:
+
+        >>> parse_environment("TOKEN=abc#123\\nURL=https://example.com/#frag # comment\\n")
+        {'TOKEN': 'abc#123', 'URL': 'https://example.com/#frag'}
+    """
 
     environment: dict[str, str] = {}
     for line_number, line in enumerate(content.splitlines(), start=1):
@@ -41,7 +48,7 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
         if stripped.startswith("export "):
             stripped = stripped.removeprefix("export ").lstrip()
         try:
-            tokens = shlex.split(stripped, comments=True, posix=True)
+            tokens = shlex.split(_strip_comment(stripped), posix=True)
         except ValueError as error:
             raise EnvironmentFileError(  # noqa: TRY003
                 f"invalid assignment at {source}:{line_number}: {error}"
@@ -61,6 +68,26 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
             )
         environment[name] = value
     return environment
+
+
+def _strip_comment(line: str) -> str:
+    """Remove a trailing comment while preserving ``#`` inside values and quotes."""
+
+    quote = ""
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+        elif quote:
+            if character == "\\" and quote == '"':
+                escaped = True
+            elif character == quote:
+                quote = ""
+        elif character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or line[index - 1] in {" ", "\t"}):
+            return line[:index]
+    return line
 
 
 def read_environment_file(path: Path) -> dict[str, str]:
