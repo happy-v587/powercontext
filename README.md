@@ -95,7 +95,7 @@ model.
 ## Integrations
 
 PowerContext provides official integrations and installation guides for Codex, Claude Code, DeepSeek Harness, Hermes
-Agent, LangChain, LangGraph, Pi Coding Agent, OpenClaw, OpenCode, WorkBuddy, Bub, and Pydantic AI. These integrations
+Agent, Pi Coding Agent, OpenClaw, OpenCode, WorkBuddy, Bub, Pydantic AI, LangChain, and LangGraph. These integrations
 use the same scoped data and history-preserving contracts through PowerContext Server; the host integrations do not
 start or embed the Server.
 

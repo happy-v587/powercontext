@@ -91,7 +91,7 @@ SQLite 数据库。显式 Memory 操作无需配置 inference provider 即可使
 ## 集成
 
 PowerContext 为 Codex、Claude Code、DeepSeek Harness、Hermes Agent、Pi Coding Agent、OpenClaw、OpenCode、
-WorkBuddy、Bub 和 Pydantic AI 提供官方集成与安装指南。
+WorkBuddy、Bub、Pydantic AI、LangChain 和 LangGraph 提供官方集成与安装指南。
 这些集成都通过 PowerContext Server 使用同一套作用域数据和保留历史的契约；宿主集成不会自行启动或内嵌 Server。
 
 ### 官方集成
