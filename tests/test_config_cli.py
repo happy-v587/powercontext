@@ -317,6 +317,82 @@ def test_managed_marker_text_inside_a_credential_is_not_treated_as_structure(tmp
     assert config_cli.parse_environment(updated)["OPENAI_API_KEY"] == config_cli.MANAGED_BEGIN
 
 
+def test_show_reports_malformed_managed_markers_without_a_traceback(tmp_path: Path) -> None:
+    environment = tmp_path / ".env"
+    content = config_cli.render_managed_block(_configuration())
+    environment.write_text(content + config_cli.MANAGED_BEGIN + "\n", encoding="utf-8")
+
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+
+    assert shown.exit_code == 2
+    assert "mismatched or repeated PowerContext managed markers" in shown.output
+    assert "Traceback" not in shown.output
+
+
+def test_custom_connection_marks_prompted_credential_for_show_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    answers = iter([
+        "openai-chat:model-name",  # generation model identifier
+        "-",  # skip generation credential variable
+        "-",  # skip generation Base URL variable
+        "MYTOKEN",  # additional variable name
+        "extra-secret",
+        "",  # finish additional variables
+        "voyage:voyage-3",  # embedding model identifier
+        "-",  # skip embedding credential variable
+        "-",  # skip embedding Base URL variable
+        "",  # finish embedding additional variables
+    ])
+    monkeypatch.setattr(config_cli.typer, "prompt", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(config_cli.typer, "confirm", lambda *_args, **_kwargs: True)
+    model, variables, credentials = config_cli._collect_custom_connection("generation")
+
+    assert model == "openai-chat:model-name"
+    assert credentials == ("MYTOKEN",)
+    assert config_cli.ProviderVariable("MYTOKEN", "extra-secret") in variables
+    configuration = _configuration(
+        generation=config_cli.ModelSelection(model, tuple(variables)),
+        embedding=config_cli.ModelSelection("voyage:voyage-3", ()),
+        credentials=credentials,
+    )
+    content = config_cli.update_environment_document("", configuration)
+    environment.write_text(content, encoding="utf-8")
+
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+
+    assert shown.exit_code == 0
+    assert "# credentials=MYTOKEN" in content
+    assert config_cli.configuration_from_document(content).credentials == ("MYTOKEN",)
+    assert "MYTOKEN=<redacted>" in shown.output
+    assert "extra-secret" not in shown.output
+
+
+def test_init_hides_and_redacts_marked_additional_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    monkeypatch.setattr(config_cli, "_select_value", lambda *_args, **_kwargs: "custom")
+    monkeypatch.setattr(config_cli, "_validate_provider_models", lambda *_args, **_kwargs: None)
+
+    result = CliRunner().invoke(
+        config_cli.app,
+        ["init", "--output", str(environment)],
+        input="\n\n\n-\n-\nMYTOKEN\ny\nextra-secret\n\n\n-\n-\n\n1536\ny\n",
+    )
+    text = environment.read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "# credentials=MYTOKEN" in text
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+    assert shown.exit_code == 0
+    assert "MYTOKEN=<redacted>" in shown.output
+    assert "extra-secret" not in shown.output
+
+
 def test_collect_provider_variable_hides_input_for_credential_names() -> None:
     captured: dict[str, object] = {}
 
@@ -330,6 +406,41 @@ def test_collect_provider_variable_hides_input_for_credential_names() -> None:
     assert result is not None
     assert result.value == "secret-value"
     assert captured.get("hide_input") is True
+
+
+def test_collect_additional_provider_variables_hides_and_records_marked_credentials() -> None:
+    captures: list[dict[str, object]] = []
+
+    def _capturing_prompt(*_args: object, **kwargs: object) -> str:
+        captures.append(kwargs)
+        return next(answers)
+
+    answers = iter(["MYTOKEN", "my-secret", ""])
+    variables: list[config_cli.ProviderVariable] = []
+
+    with (
+        patch("powercontext.cli.config.typer.prompt", _capturing_prompt),
+        patch("powercontext.cli.config.typer.confirm", return_value=True),
+    ):
+        credentials = config_cli._collect_additional_provider_variables("generation", {}, variables)
+
+    assert credentials == ("MYTOKEN",)
+    assert variables == [config_cli.ProviderVariable("MYTOKEN", "my-secret")]
+    assert captures[1].get("hide_input") is True
+
+
+def test_collect_additional_provider_variables_keeps_unmarked_values_visible() -> None:
+    answers = iter(["AWS_REGION", "us-west-2", ""])
+    variables: list[config_cli.ProviderVariable] = []
+
+    with (
+        patch("powercontext.cli.config.typer.prompt", side_effect=lambda *_args, **_kwargs: next(answers)),
+        patch("powercontext.cli.config.typer.confirm", return_value=False),
+    ):
+        credentials = config_cli._collect_additional_provider_variables("generation", {}, variables)
+
+    assert credentials == ()
+    assert variables == [config_cli.ProviderVariable("AWS_REGION", "us-west-2")]
 
 
 def _configuration(

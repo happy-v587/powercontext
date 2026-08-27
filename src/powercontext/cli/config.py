@@ -625,8 +625,42 @@ def _collect_custom_connection(role: str) -> tuple[str, list[ProviderVariable], 
     model = typer.prompt(f"{role} model identifier", default=reference_model).strip()
     shared: dict[str, str] = {}
     variables, credentials = _collect_initial_provider_variables(role, model, shared)
-    _collect_additional_provider_variables(role, shared, variables)
-    return model, variables, credentials
+    additional_credentials = _collect_additional_provider_variables(role, shared, variables)
+    return model, variables, credentials + additional_credentials
+
+
+def _collect_additional_provider_variables(
+    role: str,
+    shared: dict[str, str],
+    variables: list[ProviderVariable],
+) -> tuple[str, ...]:
+    """Collect extra assignments and the names the user marks as credentials."""
+
+    credentials: list[str] = []
+    while True:
+        name = typer.prompt(
+            f"Additional {role} provider environment variable name (empty to finish)",
+            default="",
+            show_default=False,
+        ).strip()
+        if not name:
+            break
+        if _ENVIRONMENT_NAME.fullmatch(name) is None:
+            typer.echo(f"Invalid environment variable name: {name}", err=True)
+            continue
+        if name in {variable.name for variable in variables}:
+            typer.echo(f"{name} is already configured.", err=True)
+            continue
+        is_credential = _is_secret_name(name) or typer.confirm(
+            f"Treat {name} as a credential (hidden input and redaction)?",
+            default=False,
+        )
+        variable = _collect_provider_variable(role, name, shared, is_credential=is_credential)
+        if variable is not None:
+            variables.append(variable)
+            if is_credential:
+                credentials.append(name)
+    return tuple(credentials)
 
 
 def _collect_initial_provider_variables(
@@ -650,30 +684,6 @@ def _collect_initial_provider_variables(
         if variable is not None:
             variables.append(variable)
     return variables, tuple(credentials)
-
-
-def _collect_additional_provider_variables(
-    role: str,
-    shared: dict[str, str],
-    variables: list[ProviderVariable],
-) -> None:
-    while True:
-        name = typer.prompt(
-            f"Additional {role} provider environment variable name (empty to finish)",
-            default="",
-            show_default=False,
-        ).strip()
-        if not name:
-            break
-        if _ENVIRONMENT_NAME.fullmatch(name) is None:
-            typer.echo(f"Invalid environment variable name: {name}", err=True)
-            continue
-        if name in {variable.name for variable in variables}:
-            typer.echo(f"{name} is already configured.", err=True)
-            continue
-        variable = _collect_provider_variable(role, name, shared)
-        if variable is not None:
-            variables.append(variable)
 
 
 def _prompt_provider_variable_name(role: str, label: str, default: str | None) -> str | None:
