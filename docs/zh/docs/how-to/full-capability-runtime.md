@@ -103,6 +103,9 @@ Search modes: auto, fts, vector, hybrid
 `doctor` 全部检查为 `ok`、`Status: ready`、`Memory extraction: enabled`、四种搜索模式齐全，并且
 <http://127.0.0.1:8000/> 的 Dashboard 中存在 `Quick Start`，说明完整功能已经启动。
 
+如果 `powercontext capabilities` 只列出 `auto, fts`，Server 处于仅 FTS 的回退模式，vector 和 hybrid 搜索
+不可用，因此不满足上面的完整能力检查。
+
 ### 第二部分：验证 Memory 闭环
 
 提取发生在 Source flush 时，因此在启动 Coding Agent 前，先验证一次完整闭环。在加载了同一环境变量的终端里，
@@ -133,8 +136,10 @@ curl -X POST http://127.0.0.1:8000/v1/memory/search \
   -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector"}'
 ```
 
-返回非空 `hits` 列表说明 Embedding model 已生成向量。若返回空列表但 `powercontext ready` 显示 `status=ok`，
-则说明处于 FTS 回退模式（未配置 Embedding model 或 profile）。
+只有响应同时包含 `"mode":"vector"`，并且至少一个 hit 的 `matched_by` 包含 `"vector"`，才能确认
+Embedding 可用。空 `hits` 或 `"mode":null` 不能证明 Embedding 可用。此时检查 `powercontext capabilities`：
+如果 `Search modes` 中没有 `vector`，Server 处于仅 FTS 的回退模式；如果存在 `vector`，则本次闭环尚未产生
+可供向量搜索的 Memory。当已有 Memory 但 vector capability 不可用时，显式 vector 请求会返回 HTTP 422。
 
 最后检查模型使用统计：
 

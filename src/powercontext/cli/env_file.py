@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from collections.abc import Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SENTINEL = "\x00"
+_NO_ESCAPED_CHARACTER = "No escaped character"
+_NO_CLOSING_QUOTATION = "No closing quotation"
 
 
 class EnvironmentFileError(ValueError):
@@ -49,8 +49,7 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
         if stripped.startswith("export "):
             stripped = stripped.removeprefix("export ").lstrip()
         try:
-            processed = _replace_escaped_spaces(stripped)
-            tokens = shlex.split(_strip_comment(processed), posix=True)
+            tokens = _split_shell_words(stripped)
         except ValueError as error:
             raise EnvironmentFileError(  # noqa: TRY003
                 f"invalid assignment at {source}:{line_number}: {error}"
@@ -60,7 +59,6 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
         if len(tokens) != 1 or "=" not in tokens[0]:
             raise EnvironmentFileError(f"invalid assignment at {source}:{line_number}")  # noqa: TRY003
         name, value = tokens[0].split("=", maxsplit=1)
-        value = value.replace(_SENTINEL, " ")
         if _ENVIRONMENT_NAME.fullmatch(name) is None:
             raise EnvironmentFileError(  # noqa: TRY003
                 f"invalid environment name at {source}:{line_number}: {name!r}"
@@ -73,67 +71,56 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
     return environment
 
 
-def _strip_comment(line: str) -> str:
-    """Remove a trailing comment while preserving ``#`` inside values and quotes.
+def _split_shell_words(line: str) -> list[str]:  # noqa: C901
+    """Split one shell assignment without expansion or command evaluation."""
 
-    A ``#`` only starts a comment at an unquoted word boundary. A preceding
-    backslash escapes the immediately following character, so
-    ``TOKEN=abc\\ #123`` keeps its full value.
-    """
-
+    words: list[str] = []
+    word: list[str] = []
     quote = ""
-    escaped = False
-    for index, character in enumerate(line):
-        if escaped:
-            escaped = False
-        elif quote:
-            if character == "\\" and quote == '"':
-                escaped = True
-            elif character == quote:
-                quote = ""
-        elif character in {"'", '"'}:
-            quote = character
-        elif character == "#" and (index == 0 or line[index - 1] in {" ", "\t"}):
-            return line[:index]
-    return line
-
-
-def _replace_escaped_spaces(line: str) -> str:
-    """Replace ``\\ `` (backslash-space) with a sentinel that survives ``shlex.split``."""
-
-    result: list[str] = []
-    quote = ""
-    escaped = False
-    chars = list(line)
+    word_started = False
     index = 0
-    while index < len(chars):
-        character = chars[index]
-        if escaped:
-            escaped = False
-            result.append(character)
-        elif quote:
-            if character == "\\" and quote == '"':
-                escaped = True
-                result.append(character)
-            elif character == quote:
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            if character == quote:
                 quote = ""
-                result.append(character)
             else:
-                result.append(character)
-        elif character == "\\":
-            next_index = index + 1
-            if next_index < len(chars) and chars[next_index] == " ":
-                result.append(_SENTINEL)
-                index += 2
-                continue
-            result.append(character)
+                word.append(character)
+            word_started = True
+        elif quote == '"':
+            if character == quote:
+                quote = ""
+            elif character == "\\" and index + 1 < len(line) and line[index + 1] in {"$", "`", '"', "\\"}:
+                index += 1
+                word.append(line[index])
+            else:
+                word.append(character)
+            word_started = True
         elif character in {"'", '"'}:
             quote = character
-            result.append(character)
+            word_started = True
+        elif character == "\\":
+            if index + 1 >= len(line):
+                raise ValueError(_NO_ESCAPED_CHARACTER)
+            index += 1
+            word.append(line[index])
+            word_started = True
+        elif character in {" ", "\t"}:
+            if word_started:
+                words.append("".join(word))
+                word = []
+                word_started = False
+        elif character == "#" and not word_started:
+            break
         else:
-            result.append(character)
+            word.append(character)
+            word_started = True
         index += 1
-    return "".join(result)
+    if quote:
+        raise ValueError(_NO_CLOSING_QUOTATION)
+    if word_started:
+        words.append("".join(word))
+    return words
 
 
 def read_environment_file(path: Path) -> dict[str, str]:

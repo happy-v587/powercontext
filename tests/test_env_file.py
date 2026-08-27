@@ -50,8 +50,23 @@ def test_value_may_start_with_hash_like_shell() -> None:
 
 
 def test_backslash_escaped_space_preserves_hash_value() -> None:
-    # shlex.split with posix=True strips the backslash but keeps the full value
     assert parse_environment("TOKEN=abc\\ #123\n") == {"TOKEN": "abc #123"}
+
+
+def test_even_backslash_before_space_starts_a_comment_like_shell() -> None:
+    assert parse_environment("TOKEN=abc\\\\ #comment\n") == {"TOKEN": "abc\\"}
+
+
+def test_backslash_escaped_quote_outside_quotes_is_literal() -> None:
+    assert parse_environment('TOKEN=abc\\" #comment\n') == {"TOKEN": 'abc"'}
+
+
+def test_backslash_escaped_tab_preserves_hash_value() -> None:
+    assert parse_environment("TOKEN=abc\\\t#123\n") == {"TOKEN": "abc\t#123"}
+
+
+def test_unescaped_tab_starts_a_comment_boundary() -> None:
+    assert parse_environment("TOKEN=abc\t#comment\n") == {"TOKEN": "abc"}
 
 
 def test_unterminated_quote_is_rejected() -> None:

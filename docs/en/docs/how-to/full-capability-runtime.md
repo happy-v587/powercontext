@@ -104,6 +104,9 @@ The full-capability runtime is ready when `doctor` reports all checks as `ok`, `
 `Memory extraction: enabled`, all four search modes are listed, and the Dashboard at
 <http://127.0.0.1:8000/> contains `Quick Start`.
 
+If `powercontext capabilities` lists only `auto, fts`, the Server is running in FTS-only fallback mode. Vector and
+hybrid search are unavailable, so the runtime does not meet the full-capability check above.
+
 ### Part 2: Verify the Memory loop
 
 Extraction runs when Sources are flushed, so verify one full round trip before starting a Coding Agent. With the same
@@ -135,8 +138,11 @@ curl -X POST http://127.0.0.1:8000/v1/memory/search \
   -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector"}'
 ```
 
-A non-empty `hits` list confirms the Embedding model produced vectors. An empty list with `"status":"ok"` on
-`powercontext ready` means FTS-only fallback is active (Embedding model or profile not configured).
+Embedding is verified only when the response contains `"mode":"vector"` and at least one hit whose `matched_by`
+contains `"vector"`. An empty `hits` list or `"mode":null` does not verify Embedding. Check
+`powercontext capabilities`: if `vector` is absent from `Search modes`, the Server is in FTS-only fallback mode; if it
+is present, the round trip has not produced a vector-searchable Memory yet. An explicit vector request against
+existing Memory returns HTTP 422 when vector capability is unavailable.
 
 Finally, check the stats for model usage:
 
