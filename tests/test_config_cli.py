@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -77,6 +78,18 @@ def test_arbitrary_model_providers_and_environment_variables_are_not_rejected() 
     assert values["VOYAGE_API_KEY"] == "voyage-secret"
 
 
+def test_provider_base_url_rejects_embedded_credentials() -> None:
+    configuration = _configuration(
+        generation=config_cli.ModelSelection(
+            "openai-chat:gpt-4.1-mini",
+            (config_cli.ProviderVariable("OPENAI_BASE_URL", "https://user:password@example.com/v1"),),
+        )
+    )
+
+    with pytest.raises(config_cli.ConfigError, match="must not contain credentials"):
+        config_cli.validate_configuration(configuration)
+
+
 def test_init_validate_and_show_round_trip_managed_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -105,6 +118,100 @@ def test_init_validate_and_show_round_trip_managed_environment(
     assert shown.exit_code == 0
     assert "OPENAI_API_KEY=<redacted>" in shown.output
     assert "initial-secret" not in shown.output
+
+
+def test_init_rejects_configuration_that_server_settings_reject(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    invalid = _configuration(scope_id="p" * 256)
+    monkeypatch.setattr(config_cli, "collect_configuration", lambda **_kwargs: invalid)
+
+    result = CliRunner().invoke(config_cli.app, ["init", "--output", str(environment)])
+
+    assert result.exit_code == 2
+    assert "at most 255 characters" in result.output
+    assert not environment.exists()
+
+
+def test_init_rejects_provider_models_that_cannot_be_constructed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    invalid = _configuration(
+        generation=config_cli.ModelSelection("missing-provider:model", ()),
+    )
+    monkeypatch.setattr(config_cli, "collect_configuration", lambda **_kwargs: invalid)
+
+    result = CliRunner().invoke(config_cli.app, ["init", "--output", str(environment)])
+
+    assert result.exit_code == 2
+    assert "provider models cannot be configured" in result.output
+    assert not environment.exists()
+
+
+@pytest.mark.parametrize(
+    ("database_kind", "database_url", "database_path"),
+    [
+        ("sqlite", "sqlite+aiosqlite:///relative.db", None),
+        ("seekdb", None, "relative-seekdb"),
+    ],
+)
+def test_configuration_rejects_relative_persistent_storage(
+    database_kind: str,
+    database_url: str | None,
+    database_path: str | None,
+) -> None:
+    configuration = _configuration(
+        database_kind=database_kind,
+        database_url=database_url,
+        database_path=database_path,
+    )
+
+    with pytest.raises(config_cli.ConfigError, match="absolute"):
+        config_cli.validate_configuration(configuration)
+
+
+def test_standard_provider_requires_a_credential() -> None:
+    with (
+        patch.object(config_cli, "_select_value", return_value="openai-chat"),
+        patch.object(
+            config_cli.typer,
+            "prompt",
+            side_effect=["https://api.openai.com/v1", "", "real-secret", "gpt-4.1-mini"],
+        ),
+    ):
+        selection, credentials = config_cli._collect_connection("generation")
+
+    assert selection.environment[-1] == config_cli.ProviderVariable("OPENAI_API_KEY", "real-secret")
+    assert credentials == ("OPENAI_API_KEY",)
+
+
+def test_custom_connection_is_not_reclassified_from_its_model_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    generation = config_cli.ModelSelection(
+        model="openai:custom-generation",
+        environment=(config_cli.ProviderVariable("CUSTOM_CREDENTIAL", "secret"),),
+    )
+    embedding = config_cli.ModelSelection(
+        model="voyage:custom-embedding",
+        environment=(config_cli.ProviderVariable("VOYAGE_API_KEY", "secret"),),
+    )
+    connections = iter(((generation, ("CUSTOM_CREDENTIAL",)), (embedding, ("VOYAGE_API_KEY",))))
+    monkeypatch.setattr(config_cli, "_collect_connection", lambda _role: next(connections))
+    prompts = iter(("project:test", "Test", 3))
+    monkeypatch.setattr(config_cli.typer, "prompt", lambda *_args, **_kwargs: next(prompts))
+
+    with patch.object(
+        config_cli.typer,
+        "confirm",
+        side_effect=AssertionError("custom connection cannot be reused"),
+    ):
+        configuration = config_cli.collect_configuration()
+
+    assert configuration.generation == generation
+    assert configuration.embedding == embedding
 
 
 def test_init_refuses_to_replace_an_existing_environment_without_force(
@@ -177,6 +284,7 @@ def test_init_records_generated_credential_names_for_show_redaction(
         credentials=("SERVICE_CREDENTIAL",),
     )
     monkeypatch.setattr(config_cli, "collect_configuration", lambda **_kwargs: configuration)
+    monkeypatch.setattr(config_cli, "_validate_provider_models", lambda *_args, **_kwargs: None)
 
     generated = CliRunner().invoke(config_cli.app, ["init", "--output", str(environment)], input="\n")
     text = environment.read_text(encoding="utf-8")
@@ -191,9 +299,25 @@ def test_init_records_generated_credential_names_for_show_redaction(
     assert "AWS_PROFILE=development" in shown.output
 
 
-def test_collect_provider_variable_hides_input_for_credential_names() -> None:
-    from unittest.mock import patch
+def test_managed_marker_text_inside_a_credential_is_not_treated_as_structure(tmp_path: Path) -> None:
+    environment = tmp_path / ".env"
+    marker_credential = (config_cli.ProviderVariable("OPENAI_API_KEY", config_cli.MANAGED_BEGIN),)
+    configuration = _configuration(
+        generation=config_cli.ModelSelection("openai:gpt-4.1-mini", marker_credential),
+        embedding=config_cli.ModelSelection("openai:text-embedding-3-small", marker_credential),
+    )
+    content = config_cli.render_managed_block(configuration)
+    environment.write_text(content, encoding="utf-8")
 
+    shown = CliRunner().invoke(config_cli.app, ["show", "--env-file", str(environment)])
+    updated = config_cli.update_environment_document(content, configuration)
+
+    assert shown.exit_code == 0
+    assert "OPENAI_API_KEY=<redacted>" in shown.output
+    assert config_cli.parse_environment(updated)["OPENAI_API_KEY"] == config_cli.MANAGED_BEGIN
+
+
+def test_collect_provider_variable_hides_input_for_credential_names() -> None:
     captured: dict[str, object] = {}
 
     def _capturing_prompt(text: str, **kwargs: object) -> str:  # type: ignore[override]
@@ -213,19 +337,23 @@ def _configuration(
     generation: config_cli.ModelSelection | None = None,
     embedding: config_cli.ModelSelection | None = None,
     credentials: tuple[str, ...] = ("OPENAI_API_KEY",),
+    scope_id: str = "project:quickstart",
+    database_kind: str = "sqlite",
+    database_url: str | None = None,
+    database_path: str | None = None,
 ) -> config_cli.GeneratedConfiguration:
     shared = (config_cli.ProviderVariable("OPENAI_API_KEY", "initial-secret"),)
     return config_cli.GeneratedConfiguration(
         config_version=1,
-        scope_id="project:quickstart",
+        scope_id=scope_id,
         display_name="Quick Start",
         generation=generation or config_cli.ModelSelection("openai:gpt-4.1-mini", shared),
         embedding=embedding or config_cli.ModelSelection("openai:text-embedding-3-small", shared),
         embedding_profile_id="openai-text-embedding-3-small-1536-unit-v1",
         embedding_dimension=1536,
-        database_kind="sqlite",
-        database_url=None,
-        database_path=None,
+        database_kind=database_kind,
+        database_url=database_url,
+        database_path=database_path,
         schedule_seconds=60,
         credentials=credentials,
     )

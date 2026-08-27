@@ -229,13 +229,13 @@ def test_server_command_layers_partial_cli_overrides_over_environment_settings(
     tracing.shutdown.assert_called_once_with()
 
 
-def test_server_command_loads_env_file_without_overriding_shell_environment(
+def test_server_command_uses_env_file_instead_of_stale_shell_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     environment = tmp_path / ".env"
     environment.write_text(
-        "POWERCONTEXT_SERVER_HTTP_HOST=192.0.2.10\nPOWERCONTEXT_SERVER_HTTP_PORT=8125\nOPENAI_API_KEY=file-secret\n",
+        "POWERCONTEXT_SERVER_HTTP_HOST=127.0.0.2\nPOWERCONTEXT_SERVER_HTTP_PORT=8125\nOPENAI_API_KEY=file-secret\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_HOST", "192.0.2.20")
@@ -261,9 +261,33 @@ def test_server_command_loads_env_file_without_overriding_shell_environment(
 
     assert result.exit_code == 0
     assert received_provider_keys == ["file-secret"]
-    assert received_bindings == [("192.0.2.20", 8125)]
+    assert received_bindings == [("127.0.0.2", 8125)]
     assert "OPENAI_API_KEY" not in os.environ
     assert "POWERCONTEXT_SERVER_HTTP_PORT" not in os.environ
+
+
+def test_server_command_clears_stale_server_values_missing_from_env_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / ".env"
+    environment.write_text("POWERCONTEXT_SERVER_HTTP_HOST=127.0.0.1\n", encoding="utf-8")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_AUTH_ENABLED", "true")
+    monkeypatch.delenv("POWERCONTEXT_SERVER_AUTH_TOKEN", raising=False)
+    run_server = Mock()
+    tracing = Mock()
+    monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
+    monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
+
+    result = CliRunner().invoke(
+        create_cli([server_app]),
+        ["server", "run", "--env-file", str(environment)],
+    )
+
+    assert result.exit_code == 0
+    run_server.assert_called_once()
+    assert os.environ["POWERCONTEXT_SERVER_AUTH_ENABLED"] == "true"
 
 
 def test_server_command_reports_a_missing_env_file_without_starting(

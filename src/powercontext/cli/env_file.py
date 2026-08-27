@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Collection, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXPORT_PREFIX = re.compile(r"^export[ \t]+")
 _NO_ESCAPED_CHARACTER = "No escaped character"
 _NO_CLOSING_QUOTATION = "No closing quotation"
+_UNSUPPORTED_EXPANSION = "shell expansion is not supported; quote or escape the value to keep it literal"
 
 
 class EnvironmentFileError(ValueError):
@@ -43,11 +45,14 @@ def parse_environment(content: str, *, source: str = "environment") -> dict[str,
 
     environment: dict[str, str] = {}
     for line_number, line in enumerate(content.splitlines(), start=1):
-        stripped = line.strip()
+        stripped = line.lstrip(" \t")
         if not stripped or stripped.startswith("#"):
             continue
-        if stripped.startswith("export "):
-            stripped = stripped.removeprefix("export ").lstrip()
+        export = _EXPORT_PREFIX.match(stripped)
+        if export is not None:
+            stripped = stripped[export.end() :]
+        if "\x00" in stripped:
+            raise EnvironmentFileError(f"invalid NUL character at {source}:{line_number}")  # noqa: TRY003
         try:
             tokens = _split_shell_words(stripped)
         except ValueError as error:
@@ -93,6 +98,8 @@ def _split_shell_words(line: str) -> list[str]:  # noqa: C901
             elif character == "\\" and index + 1 < len(line) and line[index + 1] in {"$", "`", '"', "\\"}:
                 index += 1
                 word.append(line[index])
+            elif character in {"$", "`"}:
+                raise ValueError(_UNSUPPORTED_EXPANSION)
             else:
                 word.append(character)
             word_started = True
@@ -112,6 +119,8 @@ def _split_shell_words(line: str) -> list[str]:  # noqa: C901
                 word_started = False
         elif character == "#" and not word_started:
             break
+        elif character in {"$", "`"} or (character == "~" and (not word or word[-1] in {"=", ":"})):
+            raise ValueError(_UNSUPPORTED_EXPANSION)
         else:
             word.append(character)
             word_started = True
@@ -126,7 +135,11 @@ def _split_shell_words(line: str) -> list[str]:  # noqa: C901
 def read_environment_file(path: Path) -> dict[str, str]:
     """Read and parse one UTF-8 environment file."""
 
-    return parse_environment(path.read_text(encoding="utf-8"), source=str(path))
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeError as error:
+        raise EnvironmentFileError(f"invalid UTF-8 environment file: {path}") from error  # noqa: TRY003
+    return parse_environment(content, source=str(path))
 
 
 def apply_environment_file(
@@ -155,15 +168,24 @@ def environment_file_context(path: Path, *, override: bool = False) -> Iterator[
 
 
 @contextmanager
-def environment_context(values: Mapping[str, str], *, override: bool = False) -> Iterator[None]:
+def environment_context(
+    values: Mapping[str, str],
+    *,
+    override: bool = False,
+    clear: Collection[str] = (),
+) -> Iterator[None]:
     """Apply parsed values for one process scope, then restore every affected value."""
 
     loaded = dict(values)
-    affected = {name for name in loaded if override or name not in os.environ}
+    cleared = set(clear)
+    affected = cleared | {name for name in loaded if override or name not in os.environ}
     original = {name: os.environ.get(name) for name in affected}
     try:
+        for name in cleared:
+            os.environ.pop(name, None)
         for name in affected:
-            os.environ[name] = loaded[name]
+            if name in loaded:
+                os.environ[name] = loaded[name]
         yield
     finally:
         for name, value in original.items():

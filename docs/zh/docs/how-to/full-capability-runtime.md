@@ -64,6 +64,9 @@ uv tool install "powercontext[cli,server] @ git+https://github.com/oceanbase/pow
 powercontext config init --output .env
 ```
 
+按照提示填写 provider credential。Pydantic AI provider 在构造时要求提供 credential；如果本地服务忽略认证，
+请填写该服务允许的非敏感占位值。
+
 生成完成后会列出 Codex、Claude Code、DeepSeek Harness、OpenCode 和 Pi 的全部 setup 与启动命令。生成的 `.env`
 按组写入了原本需要手工拼装的配置：Server HTTP、Dashboard、Scope、Generation model、Embedding model（含
 profile ID 与维度）、数据库类型与位置、调度间隔，以及各宿主集成 URL。随时可以用
@@ -75,6 +78,9 @@ profile ID 与维度）、数据库类型与位置、调度间隔，以及各宿
 ```bash
 powercontext server run --env-file .env
 ```
+
+使用 `--env-file` 时，文件内的赋值覆盖 shell 中的同名值；文件中没有的旧 `POWERCONTEXT_SERVER_*` 变量会被忽略。
+因此 `config validate` 与 `server run` 使用同一份 Server 配置。
 
 #### 4. 验证 Server
 
@@ -108,16 +114,18 @@ Search modes: auto, fts, vector, hybrid
 
 ### 第二部分：验证 Memory 闭环
 
-提取发生在 Source flush 时，因此在启动 Coding Agent 前，先验证一次完整闭环。在加载了同一环境变量的终端里，
-写入一条 Source：
+提取发生在 Source flush 时，因此在启动 Coding Agent 前，先验证一次完整闭环。使用唯一 Source ID，保证重复执行
+本指南时仍能验证本轮行为。在加载了同一环境变量的终端里执行：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/sources/content \
+SOURCE_ID="quickstart-$(date +%s)-$$"
+curl -fsS -X POST http://127.0.0.1:8000/v1/sources/content \
   -H 'content-type: application/json' \
-  -d '{"scope_id":"project:quickstart","source_id":"quickstart-1","content":"PowerContext quick start check: prefer small, verifiable steps."}'
+  -d "{\"scope_id\":\"project:quickstart\",\"source_id\":\"${SOURCE_ID}\",\"content\":\"PowerContext quick start check: prefer small, verifiable steps.\"}"
 ```
 
-Server 返回 `202` 和 `"status":"accepted"`。然后 flush 该 Scope，这一步会执行 Memory 提取：
+Server 返回 `202`、`"status":"accepted"` 和数字 `position`；记录 Source ID 与 position。然后 flush 该 Scope，
+这一步会执行 Memory 提取：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/memory/flush \
@@ -125,19 +133,32 @@ curl -X POST http://127.0.0.1:8000/v1/memory/flush \
   -d '{"scope_id":"project:quickstart"}'
 ```
 
-flush 响应包含 `previous_cursor` 和 `current_cursor`。当 `current_cursor` 大于 `previous_cursor` 时，说明
-Source 已被处理。提取可能产生零个候选项（取决于内容），因此不要假设固定的 `processed_source_count`。
+flush 响应包含 `current_cursor`，它必须大于等于 capture 响应中的 `position`。Scheduler 可能已经抢先处理该
+Source；只要 cursor 已到达该 position，`status:"idle"` 也是合法结果。如果尚未到达，请再次 flush。
+
+然后列出当前 Memory entry：
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8000/v1/memory/entries/list \
+  -H 'content-type: application/json' \
+  -d '{"scope_id":"project:quickstart"}'
+```
+
+找到 `source_refs` 中包含本次 capture `source_id` 的 entry，并记录它的 `citation.entry_id`。这才能证明本次
+Source 生成了 Memory。如果没有 entry 引用该 Source，说明提取已运行但没有产生候选项；请换一个新的 Source ID，
+写入更明确、可长期保留的事实或偏好后重试。
 
 通过向量搜索确认 Embedding 可用：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/memory/search \
   -H 'content-type: application/json' \
-  -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector"}'
+  -d '{"scope_id":"project:quickstart","query":"verifiable steps","mode":"vector","limit":50}'
 ```
 
-只有响应同时包含 `"mode":"vector"`，并且至少一个 hit 的 `matched_by` 包含 `"vector"`，才能确认
-Embedding 可用。空 `hits` 或 `"mode":null` 不能证明 Embedding 可用。此时检查 `powercontext capabilities`：
+只有响应同时包含 `"mode":"vector"`，并且某个 hit 的 `citation.entry_id` 等于上一步记录的 source-linked entry，
+同时其 `matched_by` 包含 `"vector"`，才能确认本轮 Embedding 可用。命中其他 entry、空 `hits` 或
+`"mode":null` 都不能证明本轮闭环。此时检查 `powercontext capabilities`：
 如果 `Search modes` 中没有 `vector`，Server 处于仅 FTS 的回退模式；如果存在 `vector`，则本次闭环尚未产生
 可供向量搜索的 Memory。当已有 Memory 但 vector capability 不可用时，显式 vector 请求会返回 HTTP 422。
 
@@ -151,7 +172,7 @@ powercontext stats --scope-id project:quickstart
 Embedding: 1 requests, ...
 ```
 
-Embedding 请求计数非零说明模型已端到端调用。
+Embedding 请求计数是累计值。非零计数只能辅助说明模型曾被调用；只有上面的 source-linked vector hit 能证明本轮闭环。
 
 ### 第三部分：启动 Coding Agent
 

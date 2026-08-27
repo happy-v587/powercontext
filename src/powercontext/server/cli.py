@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
@@ -84,7 +85,10 @@ def run(
         except (EnvironmentFileError, OSError) as error:
             typer.echo(f"Invalid value for --env-file: {error}", err=True)
             raise typer.Exit(code=2) from error
-    loaded_context = environment_context(loaded) if env_file is not None else nullcontext()
+    server_environment = {name for name in os.environ if name.startswith("POWERCONTEXT_SERVER_")}
+    loaded_context = (
+        environment_context(loaded, override=True, clear=server_environment) if env_file is not None else nullcontext()
+    )
     with loaded_context:
         # Layer CLI overrides in before validation so the bind policy checks the address
         # the process will actually use, including values loaded from --env-file.

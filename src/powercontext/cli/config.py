@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Never
+from urllib.parse import urlsplit
 
 import typer
 from pydantic import ValidationError
@@ -60,6 +62,7 @@ class ModelSelection:
 
     model: str
     environment: tuple[ProviderVariable, ...]
+    protocol_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +255,7 @@ def init_command(
         _fail(f"{output} already exists; use --force")
     try:
         configuration = collect_configuration(advanced=advanced)
-        validate_configuration(configuration)
+        _validate_operational_configuration(configuration)
         _print_summary(configuration)
         if not typer.confirm(f"Write {output}?", default=True):
             typer.echo("No changes written.")
@@ -260,7 +263,7 @@ def init_command(
         existing = output.read_text(encoding="utf-8") if output.exists() else ""
         content = update_environment_document(existing, configuration)
         backup = write_environment(output, content, backup=output.exists())
-    except (ConfigError, EnvironmentFileError, OSError, ValidationError) as error:
+    except (ConfigError, EnvironmentFileError, OSError, UnicodeError, ValidationError) as error:
         _fail(str(error))
     _report_written(output, backup)
     _print_next_steps(output)
@@ -276,7 +279,7 @@ def show_command(
         content = env_file.read_text(encoding="utf-8")
         values = parse_environment(content, source=str(env_file))
         recorded = _managed_metadata(content).get("credentials", "")
-    except (EnvironmentFileError, OSError) as error:
+    except (ConfigError, EnvironmentFileError, OSError, UnicodeError) as error:
         _fail(str(error))
     recorded_credentials = {name for name in recorded.split(",") if name}
     for name in sorted(values):
@@ -294,9 +297,8 @@ def validate_command(
         content = env_file.read_text(encoding="utf-8")
         values = parse_environment(content, source=str(env_file))
         configuration = configuration_from_document(content)
-        validate_configuration(configuration)
-        _validate_server_settings(values)
-    except (ConfigError, EnvironmentFileError, OSError, ValidationError) as error:
+        _validate_operational_configuration(configuration, values=values)
+    except (ConfigError, EnvironmentFileError, OSError, UnicodeError, ValidationError) as error:
         _fail(str(error))
     typer.echo(f"Configuration is valid: {env_file.resolve()}")
 
@@ -328,7 +330,7 @@ def collect_configuration(
     scope_id = typer.prompt("Scope ID", default="project:quickstart").strip()
     display_name = typer.prompt("Dashboard display name", default="Quick Start").strip()
     generation, generation_credentials = _collect_connection("generation")
-    generation_protocol = _protocol_for_model(generation.model)
+    generation_protocol = _PROTOCOL_BY_ID.get(generation.protocol_id or "")
     can_reuse = generation_protocol is not None and generation_protocol.embedding_adapter is not None
     reuse = can_reuse and typer.confirm("Use this API connection for Embedding?", default=True)
     if reuse and generation_protocol is not None:
@@ -338,6 +340,7 @@ def collect_configuration(
         embedding = ModelSelection(
             model=f"{generation_protocol.embedding_adapter}:{embedding_model}",
             environment=generation.environment,
+            protocol_id=generation_protocol.identifier,
         )
         embedding_credentials = generation_credentials
     else:
@@ -410,16 +413,18 @@ def render_managed_block(configuration: GeneratedConfiguration) -> str:
 def update_environment_document(content: str, configuration: GeneratedConfiguration) -> str:
     """Replace the managed block while preserving unknown assignments and comments."""
 
-    begin_count = content.count(MANAGED_BEGIN)
-    end_count = content.count(MANAGED_END)
-    if begin_count != end_count or begin_count > 1:
+    begin_markers = _managed_marker_matches(content, MANAGED_BEGIN)
+    end_markers = _managed_marker_matches(content, MANAGED_END)
+    if len(begin_markers) != len(end_markers) or len(begin_markers) > 1:
         raise ConfigError(  # noqa: TRY003
             "environment contains mismatched or repeated PowerContext managed markers"
         )
     block = render_managed_block(configuration)
-    if begin_count == 1:
-        start = content.index(MANAGED_BEGIN)
-        end = content.index(MANAGED_END, start) + len(MANAGED_END)
+    if begin_markers:
+        start = begin_markers[0].start()
+        end = end_markers[0].end()
+        if end < start:
+            raise ConfigError("PowerContext managed markers are out of order")  # noqa: TRY003
         return _join_document_parts(content[:start].rstrip(), block.rstrip(), content[end:].strip("\n"))
     managed_names = _ALL_FIXED_MANAGED_NAMES | {
         variable.name
@@ -473,6 +478,10 @@ def validate_configuration(configuration: GeneratedConfiguration) -> None:
         raise ConfigError(f"unsupported config version: {configuration.config_version}")  # noqa: TRY003
     if not configuration.scope_id.strip() or not configuration.display_name.strip():
         raise ConfigError("Scope ID and Dashboard display name are required")  # noqa: TRY003
+    if len(configuration.scope_id) > 255:
+        raise ConfigError("Scope ID must contain at most 255 characters")  # noqa: TRY003
+    if len(configuration.display_name) > 80:
+        raise ConfigError("Dashboard display name must contain at most 80 characters")  # noqa: TRY003
     if configuration.embedding_dimension < 1 or configuration.schedule_seconds < 1:
         raise ConfigError("Embedding dimension and Source interval must be positive")  # noqa: TRY003
     _validate_model_selection("Generation", configuration.generation)
@@ -481,7 +490,55 @@ def validate_configuration(configuration: GeneratedConfiguration) -> None:
         raise ConfigError(f"unsupported database: {configuration.database_kind}")  # noqa: TRY003
     if configuration.database_kind == "oceanbase" and not configuration.database_url:
         raise ConfigError("OceanBase requires POWERCONTEXT_SERVER_DATABASE_URL")  # noqa: TRY003
+    _validate_storage_location(configuration)
     render_environment(configuration)
+
+
+def _validate_storage_location(configuration: GeneratedConfiguration) -> None:
+    if (
+        configuration.database_kind == "seekdb"
+        and configuration.database_path is not None
+        and not Path(configuration.database_path).expanduser().is_absolute()
+    ):
+        raise ConfigError("seekDB path must be absolute")  # noqa: TRY003
+    if configuration.database_kind != "sqlite" or configuration.database_url is None:
+        return
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    try:
+        database = make_url(configuration.database_url).database
+    except (ArgumentError, ValueError) as error:
+        raise ConfigError("SQLite URL is invalid") from error  # noqa: TRY003
+    if database != ":memory:" and (database is None or not Path(database).expanduser().is_absolute()):
+        raise ConfigError("SQLite URL must use an absolute database path")  # noqa: TRY003
+
+
+def _validate_operational_configuration(
+    configuration: GeneratedConfiguration,
+    *,
+    values: Mapping[str, str] | None = None,
+) -> None:
+    validate_configuration(configuration)
+    rendered = render_environment(configuration) if values is None else dict(values)
+    _validate_server_settings(rendered)
+    _validate_provider_models(configuration, rendered)
+
+
+def _validate_provider_models(configuration: GeneratedConfiguration, values: Mapping[str, str]) -> None:
+    with _temporary_environment(values, clear=set()):
+        try:
+            asyncio.run(_construct_provider_models(configuration))
+        except Exception as error:
+            raise ConfigError(f"provider models cannot be configured: {error}") from error  # noqa: TRY003
+
+
+async def _construct_provider_models(configuration: GeneratedConfiguration) -> None:
+    from pydantic_ai.embeddings import infer_embedding_model
+    from pydantic_ai.models import infer_model
+
+    async with infer_model(configuration.generation.model):
+        infer_embedding_model(configuration.embedding.model)
 
 
 def write_environment(path: Path, content: str, *, backup: bool) -> Path | None:
@@ -534,17 +591,31 @@ def _collect_connection(
         f"{title} API Base URL",
         default=protocol.default_base_url,
     ).strip()
-    api_key = typer.prompt(
-        f"{title} API key (optional for local services)", default="", hide_input=True, show_default=False
-    ).strip()
+    api_key = ""
+    while not api_key:
+        api_key = typer.prompt(
+            f"{title} API key",
+            default="",
+            hide_input=True,
+            show_default=False,
+        ).strip()
+        if not api_key:
+            typer.echo("Enter the provider credential (use a non-secret placeholder only when the service ignores it).")
     default_model = protocol.default_generation_model if role == "generation" else protocol.default_embedding_model
     model_name = typer.prompt(f"{title} model", default=default_model or "model-name").strip()
-    environment = [ProviderVariable(protocol.base_url_name, base_url)]
-    credentials: tuple[str, ...] = ()
-    if api_key:
-        environment.append(ProviderVariable(protocol.credential_name, api_key))
-        credentials = (protocol.credential_name,)
-    return ModelSelection(model=f"{adapter}:{model_name}", environment=tuple(environment)), credentials
+    environment = [
+        ProviderVariable(protocol.base_url_name, base_url),
+        ProviderVariable(protocol.credential_name, api_key),
+    ]
+    credentials = (protocol.credential_name,)
+    return (
+        ModelSelection(
+            model=f"{adapter}:{model_name}",
+            environment=tuple(environment),
+            protocol_id=protocol.identifier,
+        ),
+        credentials,
+    )
 
 
 def _collect_custom_connection(role: str) -> tuple[str, list[ProviderVariable], tuple[str, ...]]:
@@ -662,16 +733,6 @@ def _is_base_url_name(name: str) -> bool:
     return name.endswith(("_BASE_URL", "_ENDPOINT", "_ENDPOINT_URL"))
 
 
-def _protocol_for_model(model: str) -> ApiProtocol | None:
-    adapter, separator, _name = model.partition(":")
-    if not separator:
-        return None
-    for protocol in API_PROTOCOLS:
-        if adapter in {protocol.generation_adapter, protocol.embedding_adapter}:
-            return protocol
-    return None
-
-
 def _select_value(prompt: str, choices: Sequence[tuple[str, str]], default: str) -> str:
     if sys.stdin.isatty() and sys.stdout.isatty():
         from InquirerPy import inquirer
@@ -730,6 +791,10 @@ def _validate_model_selection(role: str, selection: ModelSelection) -> None:
             raise ConfigError(f"invalid provider environment variable: {variable.name}")  # noqa: TRY003
         if variable.name in names:
             raise ConfigError(f"duplicate provider environment variable: {variable.name}")  # noqa: TRY003
+        if _is_base_url_name(variable.name):
+            parsed = urlsplit(variable.value)
+            if parsed.username is not None or parsed.password is not None:
+                raise ConfigError(f"provider Base URL must not contain credentials: {variable.name}")  # noqa: TRY003
         names.add(variable.name)
 
 
@@ -802,14 +867,16 @@ def _profile_id(model: str, dimension: int) -> str:
 
 
 def _managed_metadata(content: str) -> dict[str, str]:
-    if MANAGED_BEGIN not in content:
+    begin_markers = _managed_marker_matches(content, MANAGED_BEGIN)
+    end_markers = _managed_marker_matches(content, MANAGED_END)
+    if not begin_markers and not end_markers:
         return {}
-    if content.count(MANAGED_BEGIN) != 1 or content.count(MANAGED_END) != 1:
+    if len(begin_markers) != 1 or len(end_markers) != 1 or end_markers[0].start() < begin_markers[0].end():
         raise ConfigError(  # noqa: TRY003
             "environment contains mismatched or repeated PowerContext managed markers"
         )
-    start = content.index(MANAGED_BEGIN) + len(MANAGED_BEGIN)
-    end = content.index(MANAGED_END, start)
+    start = begin_markers[0].end()
+    end = end_markers[0].start()
     metadata: dict[str, str] = {}
     for line in content[start:end].splitlines():
         stripped = line.strip()
@@ -817,6 +884,11 @@ def _managed_metadata(content: str) -> dict[str, str]:
             name, value = stripped.removeprefix("# ").split("=", maxsplit=1)
             metadata[name] = value
     return metadata
+
+
+def _managed_marker_matches(content: str, marker: str) -> tuple[re.Match[str], ...]:
+    pattern = re.compile(rf"^[ \t]*{re.escape(marker)}[ \t\r]*$", re.MULTILINE)
+    return tuple(pattern.finditer(content))
 
 
 def _join_document_parts(*parts: str) -> str:
