@@ -107,3 +107,24 @@ def test_vector_index_probe_surfaces_the_underlying_cause(tmp_path) -> None:
             assert "sqlite-vec probe failed:" in str(exc_info.value)
 
     asyncio.run(scenario())
+
+
+def test_vector_index_probe_reports_the_provider_limit_for_a_fresh_oversized_dimension(tmp_path) -> None:
+    async def scenario() -> None:
+        async with (
+            SQLiteProfile.open(
+                SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'memory.db'}"),
+                tables=SQLITE_MEMORY_VECTOR_TABLES,
+                load_vector_extension=True,
+            ) as profile,
+            profile.database.transaction() as connection,
+        ):
+            index = SQLiteMemoryVectorIndex(_profile(65536))
+            with pytest.raises(CapabilityNotSupportedError, match=r"sqlite-vec probe failed") as exc_info:
+                await index.initialize(connection)
+            message = str(exc_info.value)
+            assert "migrate" not in message
+            assert "8192" in message
+            assert "65536" in message
+
+    asyncio.run(scenario())
