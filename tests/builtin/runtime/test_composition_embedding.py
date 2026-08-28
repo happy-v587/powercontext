@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
+from typing import ClassVar
 
-import pytest
 from pydantic_ai import Embedder
 
 from powercontext.builtin.runtime.composition import _embedding_models
@@ -25,7 +25,7 @@ from powercontext.builtin.runtime.config import InferenceConfig
 
 
 class _SpyEmbedder(Embedder):
-    settings_seen: list[dict[str, int] | None] = []
+    settings_seen: ClassVar[list[dict[str, int] | None]] = []
 
     def __init__(self, model, *, settings=None, defer_model_check=True, instrument=None):
         super().__init__(model, settings=settings, defer_model_check=defer_model_check, instrument=instrument)
