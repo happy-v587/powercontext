@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
@@ -79,6 +80,8 @@ if TYPE_CHECKING:
     from pydantic_ai.models.instrumented import InstrumentationSettings
 
 ValueT = TypeVar("ValueT")
+
+logger = logging.getLogger(__name__)
 
 
 class BuiltinConfigurationError(RuntimeError):
@@ -562,7 +565,11 @@ async def _embedding_models(
 
     def adapter(instrument: InstrumentationSettings | bool | None) -> EmbeddingModel:
         return PydanticAIEmbeddingModel(
-            embedder=Embedder(model, instrument=instrument),
+            embedder=Embedder(
+                model,
+                settings={"dimensions": profile.dimension},
+                instrument=instrument,
+            ),
             batch_size=settings.embedding_batch_size,
             profile=profile,
             limits=limits,
@@ -575,7 +582,11 @@ async def _embedding_models(
 
 def _embedding_readiness_probe(model: EmbeddingModel) -> ReadinessProbe:
     async def probe_embedding() -> None:
-        await model.embed(("PowerContext readiness probe",))
+        try:
+            await model.embed(("PowerContext readiness probe",))
+        except Exception:
+            logger.exception("embedding readiness probe failed; marking inference.embedding unavailable")
+            raise
 
     return CachedReadinessProbe(dependency_readiness_probe(probe_embedding))
 

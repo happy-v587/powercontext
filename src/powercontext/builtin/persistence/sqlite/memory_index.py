@@ -327,6 +327,9 @@ class SQLiteMemoryVectorIndex:
                 f"USING vec0(embedding float[{self.profile.dimension}])"
             )
             probe = _pack_vector((0.0,) * self.profile.dimension)
+            # A previous run may have been interrupted between inserting and deleting
+            # the probe row; clear any leftover before probing again.
+            await connection.execute(_DELETE_VECTOR_SQL, {"vector_id": -1})
             await connection.execute(
                 _INSERT_VECTOR_SQL,
                 {"vector_id": -1, "embedding": probe},
@@ -339,7 +342,7 @@ class SQLiteMemoryVectorIndex:
             ).one_or_none()
             await connection.execute(_DELETE_VECTOR_SQL, {"vector_id": -1})
         except SQLAlchemyError as error:
-            raise CapabilityNotSupportedError("vector", "sqlite-vec probe failed") from error
+            raise CapabilityNotSupportedError("vector", _probe_failure_detail(error, self.profile.dimension)) from error
         if row is None or int(row[0]) != -1:
             raise CapabilityNotSupportedError("vector", "sqlite-vec probe returned an invalid row")
 
@@ -523,6 +526,19 @@ class SQLiteMemoryVectorIndex:
                 )
             )
         return tuple(hydrated)
+
+
+def _probe_failure_detail(error: SQLAlchemyError, dimension: int) -> str:
+    orig = getattr(error, "orig", None)
+    detail = str(orig) if orig is not None else str(error)
+    normalized = detail.casefold()
+    if "dimension" in normalized:
+        return (
+            "sqlite-vec probe failed: the existing pc_memory_entry_vec table dimension does not match "
+            f"the configured embedding profile dimension {dimension}; migrate the table or align the "
+            f"embedding dimension configuration ({detail})"
+        )
+    return f"sqlite-vec probe failed: {detail}"
 
 
 def _pack_vector(vector: tuple[float, ...]) -> bytes:
