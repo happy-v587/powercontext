@@ -928,22 +928,25 @@ function tokenTotals(value) {
 	};
 }
 function savingsLabel(totals) {
-	const reduction = compactTokens(Math.abs(totals.token_reduction));
+	const baseline = compactTokens(totals.baseline_tokens);
+	const recalled = compactTokens(totals.recalled_tokens);
+	const delta = compactTokens(Math.abs(totals.token_reduction));
 	const increased = totals.token_reduction < 0;
 	if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return increased ? {
-		long: `tokens +${reduction}`,
-		compact: `↑${reduction}`
+		long: `context +${delta} tokens vs baseline`,
+		compact: `+${delta}`
 	} : {
-		long: `saved ${reduction}`,
-		compact: `↓${reduction}`
+		long: `context saved ${delta} tokens`,
+		compact: `-${delta}`
+	};
+	if (increased) return {
+		long: `context ${baseline}→${recalled} tokens (+${delta})`,
+		compact: `${baseline}→${recalled} (+${delta})`
 	};
 	const percent = Math.round(Math.abs(totals.token_reduction) / totals.baseline_tokens * 100);
-	return increased ? {
-		long: `tokens +${reduction} (${percent}%)`,
-		compact: `↑${reduction} ${percent}%`
-	} : {
-		long: `saved ${reduction} (${percent}%)`,
-		compact: `↓${reduction} ${percent}%`
+	return {
+		long: `context ${baseline}→${recalled} tokens (saved ${percent}%)`,
+		compact: `${baseline}→${recalled} (${percent}% saved)`
 	};
 }
 function formatTokenSavings(value) {
@@ -955,15 +958,8 @@ function formatPowerContextStatus(value, width = 160) {
 	const totals = tokenTotals(value);
 	if (!totals) return void 0;
 	const savings = savingsLabel(totals);
-	if (width < 100) return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations}`;
-	if (width < 140) return `PC online · ${savings.long} · ready ${totals.ready_preparations}/${totals.preparations}`;
-	return [
-		"PC online",
-		savings.long,
-		`recalled ${compactTokens(totals.recalled_tokens)}/${compactTokens(totals.baseline_tokens)}`,
-		`ready ${totals.ready_preparations}/${totals.preparations}`,
-		`compared ${totals.comparable_preparations}`
-	].join(" · ");
+	if (width < 100) return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations} ready`;
+	return `PC online · ${savings.long} · recall ${totals.ready_preparations}/${totals.preparations} ready`;
 }
 function textNode(text, color, onMouseUp) {
 	const node = createElement("text");

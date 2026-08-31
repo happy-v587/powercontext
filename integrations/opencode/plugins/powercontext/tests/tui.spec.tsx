@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { formatPowerContextStatus, formatTokenSavings, PowerContextTuiPlugin } from '../src/tui.tsx'
+import { formatPowerContextStatus, formatTokenSavings, PowerContextTuiPlugin, withTimeout } from '../src/tui.tsx'
 
 afterEach(() => {
   delete process.env.POWERCONTEXT_OPENCODE_SCOPE_ID
@@ -95,7 +95,7 @@ describe('PowerContextTuiPlugin', () => {
           token_reduction: 1_200,
         },
       },
-    })).toBe('PC saved 1.2k (40%)')
+    })).toBe('PC context 3k→1.8k tokens (saved 40%)')
   })
 
   it('shows zero before comparable data and reports token growth without calling it savings', () => {
@@ -111,7 +111,7 @@ describe('PowerContextTuiPlugin', () => {
           token_reduction: 0,
         },
       },
-    })).toBe('PC saved 0')
+    })).toBe('PC context saved 0 tokens')
     expect(formatTokenSavings({
       recall: {
         totals: {
@@ -123,7 +123,31 @@ describe('PowerContextTuiPlugin', () => {
           token_reduction: -250,
         },
       },
-    })).toBe('PC tokens +250 (25%)')
+    })).toBe('PC context 1k→1.3k tokens (+250)')
+    expect(formatTokenSavings({
+      recall: {
+        totals: {
+          preparations: 1,
+          ready_preparations: 1,
+          comparable_preparations: 0,
+          baseline_tokens: 0,
+          recalled_tokens: 0,
+          token_reduction: -250,
+        },
+      },
+    })).toBe('PC context +250 tokens vs baseline')
+    expect(formatTokenSavings({
+      recall: {
+        totals: {
+          preparations: 2,
+          ready_preparations: 2,
+          comparable_preparations: 1,
+          baseline_tokens: 1_000,
+          recalled_tokens: 1_250,
+          token_reduction: -250,
+        },
+      },
+    })).toBe('PC context 1k→1.3k tokens (+250)')
   })
 
   it('adapts detailed recall statistics to the terminal width', () => {
@@ -140,9 +164,16 @@ describe('PowerContextTuiPlugin', () => {
       },
     }
     expect(formatPowerContextStatus(stats, 160)).toBe(
-      'PC online · saved 1.2k (40%) · recalled 1.8k/3k · ready 4/5 · compared 3',
+      'PC online · context 3k→1.8k tokens (saved 40%) · recall 4/5 ready',
     )
-    expect(formatPowerContextStatus(stats, 120)).toBe('PC online · saved 1.2k (40%) · ready 4/5')
-    expect(formatPowerContextStatus(stats, 80)).toBe('PC · ↓1.2k 40% · 4/5')
+    expect(formatPowerContextStatus(stats, 120)).toBe(
+      'PC online · context 3k→1.8k tokens (saved 40%) · recall 4/5 ready',
+    )
+    expect(formatPowerContextStatus(stats, 80)).toBe('PC · 3k→1.8k (40% saved) · 4/5 ready')
+  })
+
+  it('turns a stalled status request into an offline result', async () => {
+    await expect(withTimeout(new Promise<never>(() => {}), 5)).rejects.toThrow('timed out')
+    await expect(withTimeout(Promise.resolve('ok'), 5)).resolves.toBe('ok')
   })
 })
