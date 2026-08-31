@@ -13,7 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Show, createSignal, onCleanup, onMount } from "solid-js";
+import { createElement, insert, setProp } from "@opentui/solid";
+import { createSignal } from "solid-js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
@@ -923,34 +924,37 @@ function tokenTotals(value) {
 }
 function formatTokenSavings(value) {
 	const totals = tokenTotals(value);
-	if (!totals || totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return void 0;
+	if (!totals) return void 0;
+	if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
+		if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)}`;
+		return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))}`;
+	}
 	const percent = Math.round(totals.token_reduction / totals.baseline_tokens * 100);
 	if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)} (${percent}%)`;
 	return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))} (${Math.abs(percent)}%)`;
 }
-function TokenSavings(props) {
-	const [label, setLabel] = createSignal();
+function tokenSavingsView(api, runtime, sessionID) {
+	const [label, setLabel] = createSignal("PC saved 0");
+	const root = createElement("text");
+	setProp(root, "fg", api.theme.current.success);
+	insert(root, () => label() ?? "");
 	const refresh = async () => {
-		const cwd = sessionDirectory(props.api, props.sessionID);
-		if (!cwd && !props.runtime.config.scopeId) {
-			setLabel(void 0);
+		const cwd = sessionDirectory(api, sessionID);
+		if (!cwd && !runtime.config.scopeId) {
+			setLabel("PC unavailable");
 			return;
 		}
 		try {
-			const scopeId = await deriveScopeId(cwd ?? "", { configuredScopeId: props.runtime.config.scopeId });
-			setLabel(formatTokenSavings((await props.runtime.client.request("get_stats", { scope_id: scopeId }, props.api.lifecycle.signal)).value));
+			const scopeId = await deriveScopeId(cwd ?? "", { configuredScopeId: runtime.config.scopeId });
+			setLabel(formatTokenSavings((await runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal)).value));
 		} catch {
-			setLabel(void 0);
+			setLabel("PC offline");
 		}
 	};
-	onMount(() => {
-		refresh();
-		const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS);
-		onCleanup(() => clearInterval(timer));
-	});
-	return <Show when={label()}>
-      {(value) => <text fg={props.api.theme.current.success}>{value()}</text>}
-    </Show>;
+	refresh();
+	const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS);
+	api.lifecycle.onDispose(() => clearInterval(timer));
+	return root;
 }
 function showResult(api, result) {
 	const DialogAlert = api.ui.DialogAlert;
@@ -1022,12 +1026,12 @@ const PowerContextTuiPlugin = async (api) => {
 	api.slots.register({
 		order: 50,
 		slots: { session_prompt_right(_context, props) {
-			return <TokenSavings api={api} runtime={runtime} sessionID={props.session_id} />;
+			return tokenSavingsView(api, runtime, props.session_id);
 		} }
 	});
 };
 const plugin = {
-	id: PLUGIN_NAME,
+	id: `${PLUGIN_NAME}-tui`,
 	tui: PowerContextTuiPlugin
 };
 var tui_default = plugin;

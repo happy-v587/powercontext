@@ -96,8 +96,18 @@ describe('PowerContextTuiPlugin', () => {
     })).toBe('PC saved 1.2k (40%)')
   })
 
-  it('hides unavailable data and reports token growth without calling it savings', () => {
+  it('shows zero before comparable data and reports token growth without calling it savings', () => {
     expect(formatTokenSavings({ recall: { totals: { comparable_preparations: 0 } } })).toBeUndefined()
+    expect(formatTokenSavings({
+      recall: {
+        totals: {
+          comparable_preparations: 0,
+          baseline_tokens: 0,
+          recalled_tokens: 0,
+          token_reduction: 0,
+        },
+      },
+    })).toBe('PC saved 0')
     expect(formatTokenSavings({
       recall: {
         totals: {

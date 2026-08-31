@@ -134,8 +134,14 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     plugin = _write_plugin(checkout)
     config = tmp_path / "config"
     config.mkdir()
+    stale_tui = config / "plugins" / "powercontext-opencode-tui.js"
+    stale_tui.parent.mkdir()
+    stale_tui.write_text("export default {}\n", encoding="utf-8")
+    (stale_tui.parent / ".powercontext-opencode.json").write_text(
+        json.dumps({"schema": 1, "owner": "powercontext", "integration": "opencode-plugin"}), encoding="utf-8"
+    )
     (config / "tui.json").write_text(
-        json.dumps({"$schema": "https://opencode.ai/tui.json", "plugin": ["@mem9/opencode"]}),
+        json.dumps({"$schema": "https://opencode.ai/tui.json", "plugin": ["@mem9/opencode", str(stale_tui)]}),
         encoding="utf-8",
     )
     monkeypatch.setenv("POWERCONTEXT_HOME", str(tmp_path / "data"))
@@ -155,10 +161,11 @@ def test_setup_opencode_installs_plugin_and_owned_skill(tmp_path: Path, monkeypa
     assert result.exit_code == 0
     assert "PowerContext OpenCode setup complete." in result.output
     assert (config / "plugins" / "powercontext-opencode.js").is_file()
-    assert (config / "plugins" / "powercontext-opencode-tui.js").is_file()
     tui_config = json.loads((config / "tui.json").read_text(encoding="utf-8"))
     assert tui_config["plugin"][0] == "@mem9/opencode"
-    assert str((config / "plugins" / "powercontext-opencode-tui.js").resolve()) in tui_config["plugin"]
+    assert not stale_tui.exists()
+    assert str(stale_tui) not in tui_config["plugin"]
+    assert str((plugin / "lib" / "tui.js").resolve()) in tui_config["plugin"]
     assert (skill / "SKILL.md").is_file()
     assert json.loads((skill / ".powercontext.json").read_text(encoding="utf-8"))["owner"] == "powercontext"
 

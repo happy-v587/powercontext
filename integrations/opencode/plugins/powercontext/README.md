@@ -20,8 +20,8 @@ The package also installs a TUI plugin. Run `/pc` in interactive OpenCode to ope
 then use the same subcommands as the DSH plugin: `doctor`, `search`, `remember`, `flush`, `review`, `stats`,
 `capabilities`, and `skills scan`. The command is also available from the OpenCode command palette as
 `PowerContext command`. While a session is open, the prompt statusline shows scoped recall savings such as
-`PC saved 1.2k (40%)`; it refreshes every 30 seconds and stays hidden until comparable token statistics exist. TUI
-commands are human-initiated; automatic recall and capture remain in the separate Server plugin entrypoint.
+`PC saved 1.2k (40%)`; it refreshes every 30 seconds and shows `PC saved 0` until comparable token statistics exist.
+TUI commands are human-initiated; automatic recall and capture remain in the separate Server plugin entrypoint.
 
 The project scope comes from the normalized Git remote, falling back to a hash of the worktree path. Set
 `POWERCONTEXT_OPENCODE_SCOPE_ID` to override it. Other configuration uses the same prefix with `BASE_URL`,

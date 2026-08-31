@@ -15,7 +15,8 @@
  */
 
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createElement, insert, setProp } from '@opentui/solid'
+import { createSignal } from 'solid-js'
 
 import { PowerContextClient } from './client.ts'
 import { PC_COMMAND_USAGE, handlePcCommand, type PcCommandResult, type PcCommandRuntime } from './commands.ts'
@@ -90,7 +91,11 @@ function tokenTotals(value: unknown): TokenTotals | undefined {
 
 export function formatTokenSavings(value: unknown): string | undefined {
   const totals = tokenTotals(value)
-  if (!totals || totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return undefined
+  if (!totals) return undefined
+  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
+    if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)}`
+    return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))}`
+  }
   const percent = Math.round((totals.token_reduction / totals.baseline_tokens) * 100)
   if (totals.token_reduction >= 0) {
     return `PC saved ${compactTokens(totals.token_reduction)} (${percent}%)`
@@ -98,35 +103,31 @@ export function formatTokenSavings(value: unknown): string | undefined {
   return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))} (${Math.abs(percent)}%)`
 }
 
-function TokenSavings(props: { api: TuiPluginApi; runtime: PcCommandRuntime; sessionID: string }) {
-  const [label, setLabel] = createSignal<string>()
+function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionID: string): any {
+  const [label, setLabel] = createSignal<string | undefined>('PC saved 0')
+  const root = createElement('text')
+  setProp(root, 'fg', api.theme.current.success)
+  insert(root, () => label() ?? '')
 
   const refresh = async () => {
-    const cwd = sessionDirectory(props.api, props.sessionID)
-    if (!cwd && !props.runtime.config.scopeId) {
-      setLabel(undefined)
+    const cwd = sessionDirectory(api, sessionID)
+    if (!cwd && !runtime.config.scopeId) {
+      setLabel('PC unavailable')
       return
     }
     try {
-      const scopeId = await deriveScopeId(cwd ?? '', { configuredScopeId: props.runtime.config.scopeId })
-      const result = await props.runtime.client.request('get_stats', { scope_id: scopeId }, props.api.lifecycle.signal)
+      const scopeId = await deriveScopeId(cwd ?? '', { configuredScopeId: runtime.config.scopeId })
+      const result = await runtime.client.request('get_stats', { scope_id: scopeId }, api.lifecycle.signal)
       setLabel(formatTokenSavings(result.value))
     } catch {
-      setLabel(undefined)
+      setLabel('PC offline')
     }
   }
 
-  onMount(() => {
-    void refresh()
-    const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS)
-    onCleanup(() => clearInterval(timer))
-  })
-
-  return (
-    <Show when={label()}>
-      {(value) => <text fg={props.api.theme.current.success}>{value()}</text>}
-    </Show>
-  )
+  void refresh()
+  const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS)
+  api.lifecycle.onDispose(() => clearInterval(timer))
+  return root
 }
 
 function showResult(api: TuiPluginApi, result: PcCommandResult): void {
@@ -200,11 +201,11 @@ export const PowerContextTuiPlugin: TuiPlugin = async (api) => {
     order: 50,
     slots: {
       session_prompt_right(_context, props) {
-        return <TokenSavings api={api} runtime={runtime} sessionID={props.session_id} />
+        return tokenSavingsView(api, runtime, props.session_id)
       },
     },
   })
 }
 
-const plugin = { id: PLUGIN_NAME, tui: PowerContextTuiPlugin } satisfies TuiPluginModule
+const plugin = { id: `${PLUGIN_NAME}-tui`, tui: PowerContextTuiPlugin } satisfies TuiPluginModule
 export default plugin

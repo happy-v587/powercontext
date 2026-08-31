@@ -97,14 +97,18 @@ def install_opencode_plugin(*, source: str, ref: str) -> OpenCodeSetupResult:
     require_complete_plugin(plugin_dir)
     config_dir = opencode_config_dir()
     plugin_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}.js"
-    tui_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}-tui.js"
+    tui_source = plugin_dir / OPENCODE_TUI_BUNDLE
+    legacy_tui_target = config_dir / "plugins" / f"{OPENCODE_PLUGIN_NAME}-tui.js"
     skill_target = config_dir / "skills" / "project-context"
     require_replaceable_plugin(plugin_target)
-    require_replaceable_plugin(tui_target)
+    require_replaceable_plugin(legacy_tui_target)
     require_replaceable_skill(skill_target)
     _install_plugin(plugin_dir / OPENCODE_BUNDLE, plugin_target)
-    _install_plugin(plugin_dir / OPENCODE_TUI_BUNDLE, tui_target)
-    _install_tui_config(config_dir, tui_target)
+    try:
+        legacy_tui_target.unlink(missing_ok=True)
+    except OSError as error:
+        raise SetupError.command_unavailable(["remove", "legacy", "OpenCode", "TUI plugin"], error) from error
+    _install_tui_config(config_dir, tui_source)
     _install_skill(plugin_dir / OPENCODE_SKILL.parent, skill_target)
     return OpenCodeSetupResult(
         plugin=OPENCODE_PLUGIN_NAME,
@@ -299,6 +303,12 @@ def _install_tui_config(config_dir: Path, plugin_path: Path) -> None:
         raise SetupError.command_unavailable(["read", "OpenCode", "TUI config"], error) from error
     try:
         target = plugin_path.resolve()
+        legacy_names = {f"{OPENCODE_PLUGIN_NAME}-tui.js", f"{OPENCODE_PLUGIN_NAME}.tui.js"}
+        plugins[:] = [
+            entry
+            for entry in plugins
+            if (path := _tui_entry_path(entry)) is None or (path != target and path.name not in legacy_names)
+        ]
         if not any(_tui_entry_path(entry) == target for entry in plugins):
             plugins.append(str(target))
         staging.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
