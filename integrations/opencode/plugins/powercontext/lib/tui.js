@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
@@ -306,6 +307,12 @@ const OPERATIONS = {
 		location: "body",
 		scope: false
 	},
+	list_handoff_report_known_scopes: {
+		method: "POST",
+		path: "/v1/handoff-reports/scopes/list-known",
+		location: "body",
+		scope: false
+	},
 	get_handoff_report_project: {
 		method: "POST",
 		path: "/v1/handoff-reports/projects/get",
@@ -340,7 +347,7 @@ const OPERATIONS = {
 		method: "POST",
 		path: "/v1/handoff-reports/get",
 		location: "body",
-		scope: false
+		scope: true
 	},
 	record_handoff_report_activity: {
 		method: "POST",
@@ -870,12 +877,80 @@ async function deriveScopeId(cwd, options = {}) {
 }
 
 //#endregion
-//#region src/tui.ts
+//#region src/tui.tsx
 const COMMAND_NAME = "powercontext.pc";
+const STATUS_REFRESH_MS = 3e4;
+function sessionDirectory(api, sessionID) {
+	if (sessionID) {
+		const directory = api.state.session.get(sessionID)?.directory?.trim();
+		if (directory) return directory;
+	}
+	return api.state.path.directory?.trim() || void 0;
+}
 function currentDirectory(api) {
 	const route = api.route.current;
-	if (route.name === "session" && "params" in route && route.params && typeof route.params.sessionID === "string") return api.state.session.get(route.params.sessionID)?.directory;
-	return api.state.path.directory?.trim() || void 0;
+	if (route.name === "session" && "params" in route && route.params && typeof route.params.sessionID === "string") return sessionDirectory(api, route.params.sessionID);
+	return sessionDirectory(api);
+}
+function compactTokens(value) {
+	const absolute = Math.abs(value);
+	const format = (scaled, suffix) => {
+		const digits = scaled < 10 ? 1 : 0;
+		return `${scaled.toFixed(digits).replace(/\.0$/, "")}${suffix}`;
+	};
+	if (absolute >= 1e6) return format(value / 1e6, "m");
+	if (absolute >= 1e3) return format(value / 1e3, "k");
+	return String(value);
+}
+function tokenTotals(value) {
+	if (!value || typeof value !== "object") return void 0;
+	const recall = value.recall;
+	if (!recall || typeof recall !== "object") return void 0;
+	const totals = recall.totals;
+	if (!totals || typeof totals !== "object") return void 0;
+	const candidate = totals;
+	const comparable = candidate.comparable_preparations;
+	const baseline = candidate.baseline_tokens;
+	const recalled = candidate.recalled_tokens;
+	const reduction = candidate.token_reduction;
+	if (!Number.isInteger(comparable) || Number(comparable) < 0 || !Number.isInteger(baseline) || Number(baseline) < 0 || !Number.isInteger(recalled) || Number(recalled) < 0 || !Number.isInteger(reduction)) return void 0;
+	return {
+		comparable_preparations: Number(comparable),
+		baseline_tokens: Number(baseline),
+		recalled_tokens: Number(recalled),
+		token_reduction: Number(reduction)
+	};
+}
+function formatTokenSavings(value) {
+	const totals = tokenTotals(value);
+	if (!totals || totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return void 0;
+	const percent = Math.round(totals.token_reduction / totals.baseline_tokens * 100);
+	if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)} (${percent}%)`;
+	return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))} (${Math.abs(percent)}%)`;
+}
+function TokenSavings(props) {
+	const [label, setLabel] = createSignal();
+	const refresh = async () => {
+		const cwd = sessionDirectory(props.api, props.sessionID);
+		if (!cwd && !props.runtime.config.scopeId) {
+			setLabel(void 0);
+			return;
+		}
+		try {
+			const scopeId = await deriveScopeId(cwd ?? "", { configuredScopeId: props.runtime.config.scopeId });
+			setLabel(formatTokenSavings((await props.runtime.client.request("get_stats", { scope_id: scopeId }, props.api.lifecycle.signal)).value));
+		} catch {
+			setLabel(void 0);
+		}
+	};
+	onMount(() => {
+		refresh();
+		const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS);
+		onCleanup(() => clearInterval(timer));
+	});
+	return <Show when={label()}>
+      {(value) => <text fg={props.api.theme.current.success}>{value()}</text>}
+    </Show>;
 }
 function showResult(api, result) {
 	const DialogAlert = api.ui.DialogAlert;
@@ -944,6 +1019,12 @@ const PowerContextTuiPlugin = async (api) => {
 		slashAliases: ["powercontext"],
 		run: () => showCommandPrompt(api, runtime)
 	}] });
+	api.slots.register({
+		order: 50,
+		slots: { session_prompt_right(_context, props) {
+			return <TokenSavings api={api} runtime={runtime} sessionID={props.session_id} />;
+		} }
+	});
 };
 const plugin = {
 	id: PLUGIN_NAME,
@@ -952,4 +1033,4 @@ const plugin = {
 var tui_default = plugin;
 
 //#endregion
-export { PowerContextTuiPlugin, tui_default as default };
+export { PowerContextTuiPlugin, tui_default as default, formatTokenSavings };

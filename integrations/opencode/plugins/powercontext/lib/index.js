@@ -308,6 +308,12 @@ const OPERATIONS = {
 		location: "body",
 		scope: false
 	},
+	list_handoff_report_known_scopes: {
+		method: "POST",
+		path: "/v1/handoff-reports/scopes/list-known",
+		location: "body",
+		scope: false
+	},
 	get_handoff_report_project: {
 		method: "POST",
 		path: "/v1/handoff-reports/projects/get",
@@ -342,7 +348,7 @@ const OPERATIONS = {
 		method: "POST",
 		path: "/v1/handoff-reports/get",
 		location: "body",
-		scope: false
+		scope: true
 	},
 	record_handoff_report_activity: {
 		method: "POST",

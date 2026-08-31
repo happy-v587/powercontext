@@ -16,10 +16,11 @@
 import { TuiPlugin } from "@opencode-ai/plugin/tui";
 
 //#region src/tui.d.ts
+declare function formatTokenSavings(value: unknown): string | undefined;
 declare const PowerContextTuiPlugin: TuiPlugin;
 declare const plugin: {
   id: string;
   tui: TuiPlugin;
 };
 //#endregion
-export { PowerContextTuiPlugin, plugin as default };
+export { PowerContextTuiPlugin, plugin as default, formatTokenSavings };

@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PowerContextTuiPlugin } from '../src/tui.ts'
+import { formatTokenSavings, PowerContextTuiPlugin } from '../src/tui.tsx'
 
 afterEach(() => {
   delete process.env.POWERCONTEXT_OPENCODE_SCOPE_ID
@@ -28,6 +28,7 @@ describe('PowerContextTuiPlugin', () => {
   it('registers /pc and renders the DSH-compatible command result', async () => {
     process.env.POWERCONTEXT_OPENCODE_SCOPE_ID = 'project:test'
     const layers: any[] = []
+    const slotPlugins: any[] = []
     let rendered: any
     const dialog = {
       replace: (render: () => unknown) => { rendered = render() },
@@ -42,6 +43,12 @@ describe('PowerContextTuiPlugin', () => {
         registerLayer: (layer: unknown) => {
           layers.push(layer)
           return () => undefined
+        },
+      },
+      slots: {
+        register: (plugin: unknown) => {
+          slotPlugins.push(plugin)
+          return 'powercontext-statusline'
         },
       },
       lifecycle: { signal: new AbortController().signal },
@@ -67,11 +74,39 @@ describe('PowerContextTuiPlugin', () => {
       slashName: 'pc',
       slashAliases: ['powercontext'],
     })
+    expect(slotPlugins[0]?.slots.session_prompt_right).toBeTypeOf('function')
     command.run()
     expect(rendered.kind).toBe('prompt')
     rendered.props.onConfirm('')
     await vi.waitFor(() => expect(rendered.kind).toBe('alert'))
     expect(rendered.props.message).toContain('scope=project:test')
     expect(dialog.setSize).toHaveBeenCalledWith('large')
+  })
+
+  it('formats positive token savings for the statusline', () => {
+    expect(formatTokenSavings({
+      recall: {
+        totals: {
+          comparable_preparations: 3,
+          baseline_tokens: 3_000,
+          recalled_tokens: 1_800,
+          token_reduction: 1_200,
+        },
+      },
+    })).toBe('PC saved 1.2k (40%)')
+  })
+
+  it('hides unavailable data and reports token growth without calling it savings', () => {
+    expect(formatTokenSavings({ recall: { totals: { comparable_preparations: 0 } } })).toBeUndefined()
+    expect(formatTokenSavings({
+      recall: {
+        totals: {
+          comparable_preparations: 1,
+          baseline_tokens: 1_000,
+          recalled_tokens: 1_250,
+          token_reduction: -250,
+        },
+      },
+    })).toBe('PC tokens +250 (25%)')
   })
 })

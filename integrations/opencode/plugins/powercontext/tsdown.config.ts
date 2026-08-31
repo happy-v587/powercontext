@@ -46,7 +46,7 @@ const commonConfig = {
   platform: 'node',
   target: 'es2022',
   fixedExtension: false,
-  external: [/^@opencode-ai\//, /^@opentui\//, /^node:/],
+  external: [/^@opencode-ai\//, /^@opentui\//, /^solid-js(?:\/|$)/, /^node:/],
   banner: LICENSE_HEADER,
 } as const
 
@@ -68,7 +68,7 @@ export default defineConfig([
   },
   {
     ...commonConfig,
-    entry: { tui: 'src/tui.ts' },
+    entry: { tui: 'src/tui.tsx' },
     clean: false,
     hooks: { 'build:done': normalizeEntry('tui') },
   },
