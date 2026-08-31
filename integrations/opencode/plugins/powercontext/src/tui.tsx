@@ -28,10 +28,17 @@ const COMMAND_NAME = 'powercontext.pc'
 const STATUS_REFRESH_MS = 30_000
 
 type TokenTotals = {
+  preparations: number
+  ready_preparations: number
   comparable_preparations: number
   baseline_tokens: number
   recalled_tokens: number
   token_reduction: number
+}
+
+type StatuslineState = {
+  connected: boolean
+  label: string
 }
 
 function sessionDirectory(api: TuiPluginApi, sessionID?: string): string | undefined {
@@ -71,17 +78,23 @@ function tokenTotals(value: unknown): TokenTotals | undefined {
   const totals = (recall as { totals?: unknown }).totals
   if (!totals || typeof totals !== 'object') return undefined
   const candidate = totals as Record<string, unknown>
+  const preparations = candidate.preparations
+  const ready = candidate.ready_preparations
   const comparable = candidate.comparable_preparations
   const baseline = candidate.baseline_tokens
   const recalled = candidate.recalled_tokens
   const reduction = candidate.token_reduction
   if (
-    !Number.isInteger(comparable) || Number(comparable) < 0
+    !Number.isInteger(preparations) || Number(preparations) < 0
+    || !Number.isInteger(ready) || Number(ready) < 0
+    || !Number.isInteger(comparable) || Number(comparable) < 0
     || !Number.isInteger(baseline) || Number(baseline) < 0
     || !Number.isInteger(recalled) || Number(recalled) < 0
     || !Number.isInteger(reduction)
   ) return undefined
   return {
+    preparations: Number(preparations),
+    ready_preparations: Number(ready),
     comparable_preparations: Number(comparable),
     baseline_tokens: Number(baseline),
     recalled_tokens: Number(recalled),
@@ -89,41 +102,86 @@ function tokenTotals(value: unknown): TokenTotals | undefined {
   }
 }
 
+function savingsLabel(totals: TokenTotals): { long: string; compact: string } {
+  const reduction = compactTokens(Math.abs(totals.token_reduction))
+  const increased = totals.token_reduction < 0
+  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
+    return increased
+      ? { long: `tokens +${reduction}`, compact: `↑${reduction}` }
+      : { long: `saved ${reduction}`, compact: `↓${reduction}` }
+  }
+  const percent = Math.round((Math.abs(totals.token_reduction) / totals.baseline_tokens) * 100)
+  return increased
+    ? { long: `tokens +${reduction} (${percent}%)`, compact: `↑${reduction} ${percent}%` }
+    : { long: `saved ${reduction} (${percent}%)`, compact: `↓${reduction} ${percent}%` }
+}
+
 export function formatTokenSavings(value: unknown): string | undefined {
   const totals = tokenTotals(value)
   if (!totals) return undefined
-  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
-    if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)}`
-    return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))}`
+  return `PC ${savingsLabel(totals).long}`
+}
+
+export function formatPowerContextStatus(value: unknown, width = 160): string | undefined {
+  const totals = tokenTotals(value)
+  if (!totals) return undefined
+  const savings = savingsLabel(totals)
+  if (width < 100) {
+    return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations}`
   }
-  const percent = Math.round((totals.token_reduction / totals.baseline_tokens) * 100)
-  if (totals.token_reduction >= 0) {
-    return `PC saved ${compactTokens(totals.token_reduction)} (${percent}%)`
+  if (width < 140) {
+    return `PC online · ${savings.long} · ready ${totals.ready_preparations}/${totals.preparations}`
   }
-  return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))} (${Math.abs(percent)}%)`
+  return [
+    'PC online',
+    savings.long,
+    `recalled ${compactTokens(totals.recalled_tokens)}/${compactTokens(totals.baseline_tokens)}`,
+    `ready ${totals.ready_preparations}/${totals.preparations}`,
+    `compared ${totals.comparable_preparations}`,
+  ].join(' · ')
+}
+
+function textNode(text: string, color: unknown, onMouseUp?: () => void): any {
+  const node = createElement('text')
+  setProp(node, 'fg', color)
+  if (onMouseUp) setProp(node, 'onMouseUp', onMouseUp)
+  insert(node, text)
+  return node
 }
 
 function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionID: string): any {
-  const [label, setLabel] = createSignal<string | undefined>('PC saved 0')
-  const root = createElement('text')
-  setProp(root, 'fg', api.theme.current.success)
-  insert(root, () => label() ?? '')
+  const [state, setState] = createSignal<StatuslineState>({ connected: false, label: 'PC checking' })
+  const root = createElement('box')
+  setProp(root, 'flexDirection', 'row')
+  setProp(root, 'gap', 1)
+  setProp(root, 'alignItems', 'center')
 
   const refresh = async () => {
     const cwd = sessionDirectory(api, sessionID)
     if (!cwd && !runtime.config.scopeId) {
-      setLabel('PC unavailable')
+      setState({ connected: false, label: 'PC unavailable' })
       return
     }
     try {
       const scopeId = await deriveScopeId(cwd ?? '', { configuredScopeId: runtime.config.scopeId })
       const result = await runtime.client.request('get_stats', { scope_id: scopeId }, api.lifecycle.signal)
-      setLabel(formatTokenSavings(result.value))
+      setState({
+        connected: true,
+        label: formatPowerContextStatus(result.value, api.renderer.width) ?? 'PC online',
+      })
     } catch {
-      setLabel('PC offline')
+      setState({ connected: false, label: 'PC offline' })
     }
   }
 
+  insert(root, () => {
+    const current = state()
+    const color = current.connected ? api.theme.current.success : api.theme.current.error
+    return [
+      textNode('●', color, () => void refresh()),
+      textNode(current.label, api.theme.current.textMuted),
+    ]
+  })
   void refresh()
   const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS)
   api.lifecycle.onDispose(() => clearInterval(timer))

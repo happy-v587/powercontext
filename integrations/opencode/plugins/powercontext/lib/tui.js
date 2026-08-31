@@ -910,47 +910,102 @@ function tokenTotals(value) {
 	const totals = recall.totals;
 	if (!totals || typeof totals !== "object") return void 0;
 	const candidate = totals;
+	const preparations = candidate.preparations;
+	const ready = candidate.ready_preparations;
 	const comparable = candidate.comparable_preparations;
 	const baseline = candidate.baseline_tokens;
 	const recalled = candidate.recalled_tokens;
 	const reduction = candidate.token_reduction;
-	if (!Number.isInteger(comparable) || Number(comparable) < 0 || !Number.isInteger(baseline) || Number(baseline) < 0 || !Number.isInteger(recalled) || Number(recalled) < 0 || !Number.isInteger(reduction)) return void 0;
+	if (!Number.isInteger(preparations) || Number(preparations) < 0 || !Number.isInteger(ready) || Number(ready) < 0 || !Number.isInteger(comparable) || Number(comparable) < 0 || !Number.isInteger(baseline) || Number(baseline) < 0 || !Number.isInteger(recalled) || Number(recalled) < 0 || !Number.isInteger(reduction)) return void 0;
 	return {
+		preparations: Number(preparations),
+		ready_preparations: Number(ready),
 		comparable_preparations: Number(comparable),
 		baseline_tokens: Number(baseline),
 		recalled_tokens: Number(recalled),
 		token_reduction: Number(reduction)
 	};
 }
+function savingsLabel(totals) {
+	const reduction = compactTokens(Math.abs(totals.token_reduction));
+	const increased = totals.token_reduction < 0;
+	if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return increased ? {
+		long: `tokens +${reduction}`,
+		compact: `↑${reduction}`
+	} : {
+		long: `saved ${reduction}`,
+		compact: `↓${reduction}`
+	};
+	const percent = Math.round(Math.abs(totals.token_reduction) / totals.baseline_tokens * 100);
+	return increased ? {
+		long: `tokens +${reduction} (${percent}%)`,
+		compact: `↑${reduction} ${percent}%`
+	} : {
+		long: `saved ${reduction} (${percent}%)`,
+		compact: `↓${reduction} ${percent}%`
+	};
+}
 function formatTokenSavings(value) {
 	const totals = tokenTotals(value);
 	if (!totals) return void 0;
-	if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
-		if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)}`;
-		return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))}`;
-	}
-	const percent = Math.round(totals.token_reduction / totals.baseline_tokens * 100);
-	if (totals.token_reduction >= 0) return `PC saved ${compactTokens(totals.token_reduction)} (${percent}%)`;
-	return `PC tokens +${compactTokens(Math.abs(totals.token_reduction))} (${Math.abs(percent)}%)`;
+	return `PC ${savingsLabel(totals).long}`;
+}
+function formatPowerContextStatus(value, width = 160) {
+	const totals = tokenTotals(value);
+	if (!totals) return void 0;
+	const savings = savingsLabel(totals);
+	if (width < 100) return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations}`;
+	if (width < 140) return `PC online · ${savings.long} · ready ${totals.ready_preparations}/${totals.preparations}`;
+	return [
+		"PC online",
+		savings.long,
+		`recalled ${compactTokens(totals.recalled_tokens)}/${compactTokens(totals.baseline_tokens)}`,
+		`ready ${totals.ready_preparations}/${totals.preparations}`,
+		`compared ${totals.comparable_preparations}`
+	].join(" · ");
+}
+function textNode(text, color, onMouseUp) {
+	const node = createElement("text");
+	setProp(node, "fg", color);
+	if (onMouseUp) setProp(node, "onMouseUp", onMouseUp);
+	insert(node, text);
+	return node;
 }
 function tokenSavingsView(api, runtime, sessionID) {
-	const [label, setLabel] = createSignal("PC saved 0");
-	const root = createElement("text");
-	setProp(root, "fg", api.theme.current.success);
-	insert(root, () => label() ?? "");
+	const [state, setState] = createSignal({
+		connected: false,
+		label: "PC checking"
+	});
+	const root = createElement("box");
+	setProp(root, "flexDirection", "row");
+	setProp(root, "gap", 1);
+	setProp(root, "alignItems", "center");
 	const refresh = async () => {
 		const cwd = sessionDirectory(api, sessionID);
 		if (!cwd && !runtime.config.scopeId) {
-			setLabel("PC unavailable");
+			setState({
+				connected: false,
+				label: "PC unavailable"
+			});
 			return;
 		}
 		try {
 			const scopeId = await deriveScopeId(cwd ?? "", { configuredScopeId: runtime.config.scopeId });
-			setLabel(formatTokenSavings((await runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal)).value));
+			setState({
+				connected: true,
+				label: formatPowerContextStatus((await runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal)).value, api.renderer.width) ?? "PC online"
+			});
 		} catch {
-			setLabel("PC offline");
+			setState({
+				connected: false,
+				label: "PC offline"
+			});
 		}
 	};
+	insert(root, () => {
+		const current = state();
+		return [textNode("●", current.connected ? api.theme.current.success : api.theme.current.error, () => void refresh()), textNode(current.label, api.theme.current.textMuted)];
+	});
 	refresh();
 	const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS);
 	api.lifecycle.onDispose(() => clearInterval(timer));
@@ -1037,4 +1092,4 @@ const plugin = {
 var tui_default = plugin;
 
 //#endregion
-export { PowerContextTuiPlugin, tui_default as default, formatTokenSavings };
+export { PowerContextTuiPlugin, tui_default as default, formatPowerContextStatus, formatTokenSavings };

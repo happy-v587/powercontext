@@ -19,9 +19,11 @@ read-only Candidate operations. OpenCode asks before a named durable mutation.
 The package also installs a TUI plugin. Run `/pc` in interactive OpenCode to open the PowerContext command prompt,
 then use the same subcommands as the DSH plugin: `doctor`, `search`, `remember`, `flush`, `review`, `stats`,
 `capabilities`, and `skills scan`. The command is also available from the OpenCode command palette as
-`PowerContext command`. While a session is open, the prompt statusline shows scoped recall savings such as
-`PC saved 1.2k (40%)`; it refreshes every 30 seconds and shows `PC saved 0` until comparable token statistics exist.
-TUI commands are human-initiated; automatic recall and capture remain in the separate Server plugin entrypoint.
+`PowerContext command`. While a session is open, the prompt statusline shows a green/red connection indicator and
+adaptive scoped recall details, for example `● PC online · saved 1.2k (40%) · recalled 1.8k/3k · ready 4/5 · compared
+3`. Narrow terminals receive a compact form. The status refreshes every 30 seconds; click the indicator to refresh
+immediately. TUI commands are human-initiated; automatic recall and capture remain in the separate Server plugin
+entrypoint.
 
 The project scope comes from the normalized Git remote, falling back to a hash of the worktree path. Set
 `POWERCONTEXT_OPENCODE_SCOPE_ID` to override it. Other configuration uses the same prefix with `BASE_URL`,

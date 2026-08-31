@@ -16,7 +16,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { formatTokenSavings, PowerContextTuiPlugin } from '../src/tui.tsx'
+import { formatPowerContextStatus, formatTokenSavings, PowerContextTuiPlugin } from '../src/tui.tsx'
 
 afterEach(() => {
   delete process.env.POWERCONTEXT_OPENCODE_SCOPE_ID
@@ -87,6 +87,8 @@ describe('PowerContextTuiPlugin', () => {
     expect(formatTokenSavings({
       recall: {
         totals: {
+          preparations: 5,
+          ready_preparations: 4,
           comparable_preparations: 3,
           baseline_tokens: 3_000,
           recalled_tokens: 1_800,
@@ -101,6 +103,8 @@ describe('PowerContextTuiPlugin', () => {
     expect(formatTokenSavings({
       recall: {
         totals: {
+          preparations: 0,
+          ready_preparations: 0,
           comparable_preparations: 0,
           baseline_tokens: 0,
           recalled_tokens: 0,
@@ -111,6 +115,8 @@ describe('PowerContextTuiPlugin', () => {
     expect(formatTokenSavings({
       recall: {
         totals: {
+          preparations: 2,
+          ready_preparations: 2,
           comparable_preparations: 1,
           baseline_tokens: 1_000,
           recalled_tokens: 1_250,
@@ -118,5 +124,25 @@ describe('PowerContextTuiPlugin', () => {
         },
       },
     })).toBe('PC tokens +250 (25%)')
+  })
+
+  it('adapts detailed recall statistics to the terminal width', () => {
+    const stats = {
+      recall: {
+        totals: {
+          preparations: 5,
+          ready_preparations: 4,
+          comparable_preparations: 3,
+          baseline_tokens: 3_000,
+          recalled_tokens: 1_800,
+          token_reduction: 1_200,
+        },
+      },
+    }
+    expect(formatPowerContextStatus(stats, 160)).toBe(
+      'PC online · saved 1.2k (40%) · recalled 1.8k/3k · ready 4/5 · compared 3',
+    )
+    expect(formatPowerContextStatus(stats, 120)).toBe('PC online · saved 1.2k (40%) · ready 4/5')
+    expect(formatPowerContextStatus(stats, 80)).toBe('PC · ↓1.2k 40% · 4/5')
   })
 })
