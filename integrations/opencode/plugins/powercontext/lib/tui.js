@@ -881,6 +881,7 @@ async function deriveScopeId(cwd, options = {}) {
 //#region src/tui.tsx
 const COMMAND_NAME = "powercontext.pc";
 const STATUS_REFRESH_MS = 3e4;
+const STATUS_TIMEOUT_MS = 3e3;
 function sessionDirectory(api, sessionID) {
 	if (sessionID) {
 		const directory = api.state.session.get(sessionID)?.directory?.trim();
@@ -971,36 +972,51 @@ function textNode(text, color, onMouseUp) {
 	insert(node, text);
 	return node;
 }
+function withTimeout(promise, timeoutMs) {
+	return new Promise((resolve$1, reject) => {
+		const timer = setTimeout(() => reject(/* @__PURE__ */ new Error("PowerContext status timed out")), timeoutMs);
+		promise.then((value) => {
+			clearTimeout(timer);
+			resolve$1(value);
+		}, (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+	});
+}
 function tokenSavingsView(api, runtime, sessionID) {
 	const [state, setState] = createSignal({
 		connected: false,
-		label: "PC checking"
+		label: "PC offline"
 	});
 	const root = createElement("box");
 	setProp(root, "flexDirection", "row");
 	setProp(root, "gap", 1);
 	setProp(root, "alignItems", "center");
-	const refresh = async () => {
+	const loadStatus = async () => {
 		const cwd = sessionDirectory(api, sessionID);
-		if (!cwd && !runtime.config.scopeId) {
-			setState({
-				connected: false,
-				label: "PC unavailable"
-			});
-			return;
-		}
+		if (!cwd && !runtime.config.scopeId) return {
+			connected: false,
+			label: "PC unavailable"
+		};
 		try {
-			const scopeId = await deriveScopeId(cwd ?? "", { configuredScopeId: runtime.config.scopeId });
-			setState({
+			const scopeId = await withTimeout(deriveScopeId(cwd ?? "", { configuredScopeId: runtime.config.scopeId }), STATUS_TIMEOUT_MS);
+			return {
 				connected: true,
-				label: formatPowerContextStatus((await runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal)).value, api.renderer.width) ?? "PC online"
-			});
+				label: formatPowerContextStatus((await withTimeout(runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal), STATUS_TIMEOUT_MS)).value, api.renderer.width) ?? "PC online"
+			};
 		} catch {
-			setState({
+			return {
 				connected: false,
 				label: "PC offline"
-			});
+			};
 		}
+	};
+	const refresh = () => {
+		withTimeout(loadStatus(), STATUS_TIMEOUT_MS * 2 + 1e3).then((value) => setState(value), () => setState({
+			connected: false,
+			label: "PC offline"
+		}));
 	};
 	insert(root, () => {
 		const current = state();
@@ -1092,4 +1108,4 @@ const plugin = {
 var tui_default = plugin;
 
 //#endregion
-export { PowerContextTuiPlugin, tui_default as default, formatPowerContextStatus, formatTokenSavings };
+export { PowerContextTuiPlugin, tui_default as default, formatPowerContextStatus, formatTokenSavings, withTimeout };

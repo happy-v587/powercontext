@@ -26,6 +26,7 @@ import { deriveScopeId } from './scope.ts'
 
 const COMMAND_NAME = 'powercontext.pc'
 const STATUS_REFRESH_MS = 30_000
+const STATUS_TIMEOUT_MS = 3_000
 
 type TokenTotals = {
   preparations: number
@@ -149,29 +150,55 @@ function textNode(text: string, color: unknown, onMouseUp?: () => void): any {
   return node
 }
 
+export function withTimeout<Value>(promise: Promise<Value>, timeoutMs: number): Promise<Value> {
+  return new Promise<Value>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('PowerContext status timed out')), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
 function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionID: string): any {
-  const [state, setState] = createSignal<StatuslineState>({ connected: false, label: 'PC checking' })
+  const [state, setState] = createSignal<StatuslineState>({ connected: false, label: 'PC offline' })
   const root = createElement('box')
   setProp(root, 'flexDirection', 'row')
   setProp(root, 'gap', 1)
   setProp(root, 'alignItems', 'center')
 
-  const refresh = async () => {
+  const loadStatus = async (): Promise<StatuslineState> => {
     const cwd = sessionDirectory(api, sessionID)
-    if (!cwd && !runtime.config.scopeId) {
-      setState({ connected: false, label: 'PC unavailable' })
-      return
-    }
+    if (!cwd && !runtime.config.scopeId) return { connected: false, label: 'PC unavailable' }
     try {
-      const scopeId = await deriveScopeId(cwd ?? '', { configuredScopeId: runtime.config.scopeId })
-      const result = await runtime.client.request('get_stats', { scope_id: scopeId }, api.lifecycle.signal)
-      setState({
+      const scopeId = await withTimeout(
+        deriveScopeId(cwd ?? '', { configuredScopeId: runtime.config.scopeId }),
+        STATUS_TIMEOUT_MS,
+      )
+      const result = await withTimeout(
+        runtime.client.request('get_stats', { scope_id: scopeId }, api.lifecycle.signal),
+        STATUS_TIMEOUT_MS,
+      )
+      return {
         connected: true,
         label: formatPowerContextStatus(result.value, api.renderer.width) ?? 'PC online',
-      })
+      }
     } catch {
-      setState({ connected: false, label: 'PC offline' })
+      return { connected: false, label: 'PC offline' }
     }
+  }
+
+  const refresh = () => {
+    void withTimeout(loadStatus(), STATUS_TIMEOUT_MS * 2 + 1_000).then(
+      (value) => setState(value),
+      () => setState({ connected: false, label: 'PC offline' }),
+    )
   }
 
   insert(root, () => {
