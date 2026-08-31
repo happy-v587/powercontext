@@ -104,25 +104,22 @@ function tokenTotals(value: unknown): TokenTotals | undefined {
 }
 
 function savingsLabel(totals: TokenTotals): { long: string; compact: string } {
+  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
+    return { long: 'no comparable runs yet', compact: 'no baseline' }
+  }
   const baseline = compactTokens(totals.baseline_tokens)
   const recalled = compactTokens(totals.recalled_tokens)
   const delta = compactTokens(Math.abs(totals.token_reduction))
-  const increased = totals.token_reduction < 0
-  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
-    return increased
-      ? { long: `context +${delta} tokens vs baseline`, compact: `+${delta}` }
-      : { long: `context saved ${delta} tokens`, compact: `-${delta}` }
-  }
-  if (increased) {
+  if (totals.token_reduction < 0) {
     return {
-      long: `context ${baseline}→${recalled} tokens (+${delta})`,
+      long: `context ${baseline}→${recalled} tokens (expanded +${delta})`,
       compact: `${baseline}→${recalled} (+${delta})`,
     }
   }
   const percent = Math.round((Math.abs(totals.token_reduction) / totals.baseline_tokens) * 100)
   return {
-    long: `context ${baseline}→${recalled} tokens (saved ${percent}%)`,
-    compact: `${baseline}→${recalled} (${percent}% saved)`,
+    long: `context ${baseline}→${recalled} tokens (compressed ${percent}%)`,
+    compact: `${baseline}→${recalled} (${percent}% compressed)`,
   }
 }
 

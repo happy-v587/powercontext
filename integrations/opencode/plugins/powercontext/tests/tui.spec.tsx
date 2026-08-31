@@ -95,23 +95,23 @@ describe('PowerContextTuiPlugin', () => {
           token_reduction: 1_200,
         },
       },
-    })).toBe('PC context 3k→1.8k tokens (saved 40%)')
+    })).toBe('PC context 3k→1.8k tokens (compressed 40%)')
   })
 
-  it('shows zero before comparable data and reports token growth without calling it savings', () => {
+  it('reports compression, expansion, and the absence of comparable runs honestly', () => {
     expect(formatTokenSavings({ recall: { totals: { comparable_preparations: 0 } } })).toBeUndefined()
     expect(formatTokenSavings({
       recall: {
         totals: {
-          preparations: 0,
-          ready_preparations: 0,
+          preparations: 11,
+          ready_preparations: 6,
           comparable_preparations: 0,
           baseline_tokens: 0,
           recalled_tokens: 0,
           token_reduction: 0,
         },
       },
-    })).toBe('PC context saved 0 tokens')
+    })).toBe('PC no comparable runs yet')
     expect(formatTokenSavings({
       recall: {
         totals: {
@@ -123,31 +123,7 @@ describe('PowerContextTuiPlugin', () => {
           token_reduction: -250,
         },
       },
-    })).toBe('PC context 1k→1.3k tokens (+250)')
-    expect(formatTokenSavings({
-      recall: {
-        totals: {
-          preparations: 1,
-          ready_preparations: 1,
-          comparable_preparations: 0,
-          baseline_tokens: 0,
-          recalled_tokens: 0,
-          token_reduction: -250,
-        },
-      },
-    })).toBe('PC context +250 tokens vs baseline')
-    expect(formatTokenSavings({
-      recall: {
-        totals: {
-          preparations: 2,
-          ready_preparations: 2,
-          comparable_preparations: 1,
-          baseline_tokens: 1_000,
-          recalled_tokens: 1_250,
-          token_reduction: -250,
-        },
-      },
-    })).toBe('PC context 1k→1.3k tokens (+250)')
+    })).toBe('PC context 1k→1.3k tokens (expanded +250)')
   })
 
   it('adapts detailed recall statistics to the terminal width', () => {
@@ -164,12 +140,12 @@ describe('PowerContextTuiPlugin', () => {
       },
     }
     expect(formatPowerContextStatus(stats, 160)).toBe(
-      'PC online · context 3k→1.8k tokens (saved 40%) · recall 4/5 ready',
+      'PC online · context 3k→1.8k tokens (compressed 40%) · recall 4/5 ready',
     )
     expect(formatPowerContextStatus(stats, 120)).toBe(
-      'PC online · context 3k→1.8k tokens (saved 40%) · recall 4/5 ready',
+      'PC online · context 3k→1.8k tokens (compressed 40%) · recall 4/5 ready',
     )
-    expect(formatPowerContextStatus(stats, 80)).toBe('PC · 3k→1.8k (40% saved) · 4/5 ready')
+    expect(formatPowerContextStatus(stats, 80)).toBe('PC · 3k→1.8k (40% compressed) · 4/5 ready')
   })
 
   it('turns a stalled status request into an offline result', async () => {
