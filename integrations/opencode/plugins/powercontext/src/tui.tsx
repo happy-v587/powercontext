@@ -103,40 +103,18 @@ function tokenTotals(value: unknown): TokenTotals | undefined {
   }
 }
 
-function savingsLabel(totals: TokenTotals): { long: string; compact: string } {
-  if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) {
-    return { long: 'no comparable runs yet', compact: 'no baseline' }
-  }
-  const baseline = compactTokens(totals.baseline_tokens)
-  const recalled = compactTokens(totals.recalled_tokens)
-  const delta = compactTokens(Math.abs(totals.token_reduction))
-  if (totals.token_reduction < 0) {
-    return {
-      long: `context ${baseline}→${recalled} tokens (expanded +${delta})`,
-      compact: `${baseline}→${recalled} (+${delta})`,
-    }
-  }
-  const percent = Math.round((Math.abs(totals.token_reduction) / totals.baseline_tokens) * 100)
-  return {
-    long: `context ${baseline}→${recalled} tokens (compressed ${percent}%)`,
-    compact: `${baseline}→${recalled} (${percent}% compressed)`,
-  }
+function reductionOf(value: unknown): number | undefined {
+  return tokenTotals(value)?.token_reduction
 }
 
-export function formatTokenSavings(value: unknown): string | undefined {
-  const totals = tokenTotals(value)
-  if (!totals) return undefined
-  return `PC ${savingsLabel(totals).long}`
+function savingsPhrase(reduction: number | undefined, suffix: string): string {
+  if (reduction === undefined) return `no data ${suffix}`
+  const amount = compactTokens(Math.abs(reduction))
+  return `${reduction >= 0 ? 'saved' : 'cost'} ${amount} ${suffix}`
 }
 
-export function formatPowerContextStatus(value: unknown, width = 160): string | undefined {
-  const totals = tokenTotals(value)
-  if (!totals) return undefined
-  const savings = savingsLabel(totals)
-  if (width < 100) {
-    return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations} ready`
-  }
-  return `PC online · ${savings.long} · recall ${totals.ready_preparations}/${totals.preparations} ready`
+export function formatPowerContextStatus(today: unknown, month: unknown): string {
+  return `PC online · ${savingsPhrase(reductionOf(today), 'today')} · ${savingsPhrase(reductionOf(month), 'in 30d')}`
 }
 
 function textNode(text: string, color: unknown, onMouseUp?: () => void): any {
@@ -178,13 +156,19 @@ function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionI
         deriveScopeId(cwd ?? '', { configuredScopeId: runtime.config.scopeId }),
         STATUS_TIMEOUT_MS,
       )
-      const result = await withTimeout(
-        runtime.client.request('get_stats', { scope_id: scopeId }, api.lifecycle.signal),
-        STATUS_TIMEOUT_MS,
-      )
+      const [today, month] = await Promise.all([
+        withTimeout(
+          runtime.client.request('get_stats', { scope_id: scopeId, period: 'today' }, api.lifecycle.signal),
+          STATUS_TIMEOUT_MS,
+        ),
+        withTimeout(
+          runtime.client.request('get_stats', { scope_id: scopeId, period: '30d' }, api.lifecycle.signal),
+          STATUS_TIMEOUT_MS,
+        ),
+      ])
       return {
         connected: true,
-        label: formatPowerContextStatus(result.value, api.renderer.width) ?? 'PC online',
+        label: formatPowerContextStatus(today.value, month.value),
       }
     } catch {
       return { connected: false, label: 'PC offline' }

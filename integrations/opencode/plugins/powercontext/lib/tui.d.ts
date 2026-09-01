@@ -16,8 +16,7 @@
 import { TuiPlugin } from "@opencode-ai/plugin/tui";
 
 //#region src/tui.d.ts
-declare function formatTokenSavings(value: unknown): string | undefined;
-declare function formatPowerContextStatus(value: unknown, width?: number): string | undefined;
+declare function formatPowerContextStatus(today: unknown, month: unknown): string;
 declare function withTimeout<Value>(promise: Promise<Value>, timeoutMs: number): Promise<Value>;
 declare const PowerContextTuiPlugin: TuiPlugin;
 declare const plugin: {
@@ -25,4 +24,4 @@ declare const plugin: {
   tui: TuiPlugin;
 };
 //#endregion
-export { PowerContextTuiPlugin, plugin as default, formatPowerContextStatus, formatTokenSavings, withTimeout };
+export { PowerContextTuiPlugin, plugin as default, formatPowerContextStatus, withTimeout };

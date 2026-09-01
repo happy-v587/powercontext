@@ -927,35 +927,16 @@ function tokenTotals(value) {
 		token_reduction: Number(reduction)
 	};
 }
-function savingsLabel(totals) {
-	if (totals.comparable_preparations === 0 || totals.baseline_tokens === 0) return {
-		long: "no comparable runs yet",
-		compact: "no baseline"
-	};
-	const baseline = compactTokens(totals.baseline_tokens);
-	const recalled = compactTokens(totals.recalled_tokens);
-	const delta = compactTokens(Math.abs(totals.token_reduction));
-	if (totals.token_reduction < 0) return {
-		long: `context ${baseline}→${recalled} tokens (expanded +${delta})`,
-		compact: `${baseline}→${recalled} (+${delta})`
-	};
-	const percent = Math.round(Math.abs(totals.token_reduction) / totals.baseline_tokens * 100);
-	return {
-		long: `context ${baseline}→${recalled} tokens (compressed ${percent}%)`,
-		compact: `${baseline}→${recalled} (${percent}% compressed)`
-	};
+function reductionOf(value) {
+	return tokenTotals(value)?.token_reduction;
 }
-function formatTokenSavings(value) {
-	const totals = tokenTotals(value);
-	if (!totals) return void 0;
-	return `PC ${savingsLabel(totals).long}`;
+function savingsPhrase(reduction, suffix) {
+	if (reduction === void 0) return `no data ${suffix}`;
+	const amount = compactTokens(Math.abs(reduction));
+	return `${reduction >= 0 ? "saved" : "cost"} ${amount} ${suffix}`;
 }
-function formatPowerContextStatus(value, width = 160) {
-	const totals = tokenTotals(value);
-	if (!totals) return void 0;
-	const savings = savingsLabel(totals);
-	if (width < 100) return `PC · ${savings.compact} · ${totals.ready_preparations}/${totals.preparations} ready`;
-	return `PC online · ${savings.long} · recall ${totals.ready_preparations}/${totals.preparations} ready`;
+function formatPowerContextStatus(today, month) {
+	return `PC online · ${savingsPhrase(reductionOf(today), "today")} · ${savingsPhrase(reductionOf(month), "in 30d")}`;
 }
 function textNode(text, color, onMouseUp) {
 	const node = createElement("text");
@@ -993,9 +974,16 @@ function tokenSavingsView(api, runtime, sessionID) {
 		};
 		try {
 			const scopeId = await withTimeout(deriveScopeId(cwd ?? "", { configuredScopeId: runtime.config.scopeId }), STATUS_TIMEOUT_MS);
+			const [today, month] = await Promise.all([withTimeout(runtime.client.request("get_stats", {
+				scope_id: scopeId,
+				period: "today"
+			}, api.lifecycle.signal), STATUS_TIMEOUT_MS), withTimeout(runtime.client.request("get_stats", {
+				scope_id: scopeId,
+				period: "30d"
+			}, api.lifecycle.signal), STATUS_TIMEOUT_MS)]);
 			return {
 				connected: true,
-				label: formatPowerContextStatus((await withTimeout(runtime.client.request("get_stats", { scope_id: scopeId }, api.lifecycle.signal), STATUS_TIMEOUT_MS)).value, api.renderer.width) ?? "PC online"
+				label: formatPowerContextStatus(today.value, month.value)
 			};
 		} catch {
 			return {
@@ -1100,4 +1088,4 @@ const plugin = {
 var tui_default = plugin;
 
 //#endregion
-export { PowerContextTuiPlugin, tui_default as default, formatPowerContextStatus, formatTokenSavings, withTimeout };
+export { PowerContextTuiPlugin, tui_default as default, formatPowerContextStatus, withTimeout };
