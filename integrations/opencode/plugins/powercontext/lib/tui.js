@@ -935,6 +935,10 @@ function savingsPhrase(reduction, suffix) {
 	const amount = compactTokens(Math.abs(reduction));
 	return `${reduction >= 0 ? "saved" : "cost"} ${amount} ${suffix}`;
 }
+function savingsColor(reduction, api) {
+	if (reduction === void 0 || reduction === 0) return api.theme.current.textMuted;
+	return reduction > 0 ? api.theme.current.success : api.theme.current.error;
+}
 function formatPowerContextStatus(today, month) {
 	return `PC online · ${savingsPhrase(reductionOf(today), "today")} · ${savingsPhrase(reductionOf(month), "in 30d")}`;
 }
@@ -981,9 +985,13 @@ function tokenSavingsView(api, runtime, sessionID) {
 				scope_id: scopeId,
 				period: "30d"
 			}, api.lifecycle.signal), STATUS_TIMEOUT_MS)]);
+			const todayReduction = reductionOf(today.value);
+			const monthReduction = reductionOf(month.value);
 			return {
 				connected: true,
-				label: formatPowerContextStatus(today.value, month.value)
+				label: formatPowerContextStatus(today.value, month.value),
+				todayReduction,
+				monthReduction
 			};
 		} catch {
 			return {
@@ -1000,7 +1008,15 @@ function tokenSavingsView(api, runtime, sessionID) {
 	};
 	insert(root, () => {
 		const current = state();
-		return [textNode("●", current.connected ? api.theme.current.success : api.theme.current.error, () => void refresh()), textNode(current.label, api.theme.current.textMuted)];
+		const connectionColor = current.connected ? api.theme.current.success : api.theme.current.error;
+		if (!current.connected) return [textNode("●", connectionColor, () => void refresh()), textNode(current.label, api.theme.current.textMuted)];
+		return [
+			textNode("●", connectionColor, () => void refresh()),
+			textNode("PC online · ", api.theme.current.textMuted),
+			textNode(savingsPhrase(current.todayReduction, "today"), savingsColor(current.todayReduction, api)),
+			textNode(" · ", api.theme.current.textMuted),
+			textNode(savingsPhrase(current.monthReduction, "in 30d"), savingsColor(current.monthReduction, api))
+		];
 	});
 	refresh();
 	const timer = setInterval(() => void refresh(), STATUS_REFRESH_MS);

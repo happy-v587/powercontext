@@ -23,8 +23,9 @@ then use the same subcommands as the DSH plugin: `doctor`, `search`, `remember`,
 two scoped token-savings numbers, for example `● PC online · saved 1.2k today · saved 12.5k in 30d`. Numbers come
 from the recall-token estimator (a per-call compression proxy, not an end-to-end savings measurement; use the OFF/ON
 evaluation harness for measured deltas). When recall made the context larger, the wording switches to `cost N`.
-The status refreshes every 30 seconds; click the indicator to refresh immediately. TUI commands are
-human-initiated; automatic recall and capture remain in the separate Server plugin entrypoint.
+Saved amounts are green; `cost` amounts are red; zero or unavailable values stay muted. The status refreshes every
+30 seconds; click the indicator to refresh immediately. TUI commands are human-initiated; automatic recall and capture
+remain in the separate Server plugin entrypoint.
 
 The project scope comes from the normalized Git remote, falling back to a hash of the worktree path. Set
 `POWERCONTEXT_OPENCODE_SCOPE_ID` to override it. Other configuration uses the same prefix with `BASE_URL`,

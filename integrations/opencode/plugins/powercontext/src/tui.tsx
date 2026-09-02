@@ -40,6 +40,8 @@ type TokenTotals = {
 type StatuslineState = {
   connected: boolean
   label: string
+  todayReduction?: number
+  monthReduction?: number
 }
 
 function sessionDirectory(api: TuiPluginApi, sessionID?: string): string | undefined {
@@ -113,6 +115,11 @@ function savingsPhrase(reduction: number | undefined, suffix: string): string {
   return `${reduction >= 0 ? 'saved' : 'cost'} ${amount} ${suffix}`
 }
 
+function savingsColor(reduction: number | undefined, api: TuiPluginApi): unknown {
+  if (reduction === undefined || reduction === 0) return api.theme.current.textMuted
+  return reduction > 0 ? api.theme.current.success : api.theme.current.error
+}
+
 export function formatPowerContextStatus(today: unknown, month: unknown): string {
   return `PC online · ${savingsPhrase(reductionOf(today), 'today')} · ${savingsPhrase(reductionOf(month), 'in 30d')}`
 }
@@ -166,9 +173,13 @@ function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionI
           STATUS_TIMEOUT_MS,
         ),
       ])
+      const todayReduction = reductionOf(today.value)
+      const monthReduction = reductionOf(month.value)
       return {
         connected: true,
         label: formatPowerContextStatus(today.value, month.value),
+        todayReduction,
+        monthReduction,
       }
     } catch {
       return { connected: false, label: 'PC offline' }
@@ -184,10 +195,19 @@ function tokenSavingsView(api: TuiPluginApi, runtime: PcCommandRuntime, sessionI
 
   insert(root, () => {
     const current = state()
-    const color = current.connected ? api.theme.current.success : api.theme.current.error
+    const connectionColor = current.connected ? api.theme.current.success : api.theme.current.error
+    if (!current.connected) {
+      return [
+        textNode('●', connectionColor, () => void refresh()),
+        textNode(current.label, api.theme.current.textMuted),
+      ]
+    }
     return [
-      textNode('●', color, () => void refresh()),
-      textNode(current.label, api.theme.current.textMuted),
+      textNode('●', connectionColor, () => void refresh()),
+      textNode('PC online · ', api.theme.current.textMuted),
+      textNode(savingsPhrase(current.todayReduction, 'today'), savingsColor(current.todayReduction, api)),
+      textNode(' · ', api.theme.current.textMuted),
+      textNode(savingsPhrase(current.monthReduction, 'in 30d'), savingsColor(current.monthReduction, api)),
     ]
   })
   void refresh()
