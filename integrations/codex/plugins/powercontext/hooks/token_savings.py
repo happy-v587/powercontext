@@ -55,11 +55,11 @@ _REQUEST_HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": _USER_AGENT,
 }
-# The Stop entry is the only hook with a 3-second host deadline (hooks.json). Keep
+# The Stop entry has a 10-second host deadline (hooks.json). Keep
 # the internal HTTP budget below it so uv/Python start-up and the bounded output
 # fit inside the host limit instead of being killed mid-request.
-_HOST_TIMEOUT_SECONDS = 3.0
-_STARTUP_AND_OUTPUT_MARGIN_SECONDS = 1.5
+_HOST_TIMEOUT_SECONDS = 10.0
+_STARTUP_AND_OUTPUT_MARGIN_SECONDS = 2.0
 
 
 def stop_http_budget(configured_seconds: float) -> float:

@@ -12,7 +12,7 @@ The integration uses each public surface for the job it fits:
 
 Codex does not expose a plugin-defined status-line item. Its `tui.status_line`
 setting accepts only Codex's built-in identifiers, so this plugin does not write
-an invalid PowerContext identifier. Instead, a three-second-bounded `Stop` Hook shows
+an invalid PowerContext identifier. Instead, a ten-second-bounded `Stop` Hook shows
 the current scope's estimated token reduction after each completed turn, for
 example `PowerContext · saved 1.2k today · saved 12k in 30d`. When the Server is
 unavailable it prints one deduplicated, content-free diagnostic instead of the

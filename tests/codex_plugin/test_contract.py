@@ -302,6 +302,6 @@ def test_plugin_reports_token_savings_from_a_bounded_stop_hook() -> None:
         "command": (
             'uv run --frozen --quiet --project "${PLUGIN_ROOT}" python "${PLUGIN_ROOT}/hooks/token_savings.py"'
         ),
-        "timeout": 3,
+        "timeout": 10,
         "statusMessage": "Loading PowerContext token savings",
     }

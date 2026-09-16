@@ -264,6 +264,8 @@ class _DeadlineSocket:
 def bind_response_deadline(response: object, deadline: float) -> None:
     """Keep every socket read of one open response inside the absolute deadline."""
 
+    if isinstance(response, HTTPError):
+        response = response.fp
     raw: Any = getattr(getattr(response, "fp", None), "raw", None)
     if raw is None:
         return

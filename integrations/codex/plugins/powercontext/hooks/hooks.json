@@ -43,7 +43,7 @@
           {
             "type": "command",
             "command": "uv run --frozen --quiet --project \"${PLUGIN_ROOT}\" python \"${PLUGIN_ROOT}/hooks/token_savings.py\"",
-            "timeout": 3,
+            "timeout": 10,
             "statusMessage": "Loading PowerContext token savings"
           }
         ]

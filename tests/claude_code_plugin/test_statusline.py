@@ -155,6 +155,7 @@ def test_render_aborts_a_slow_drip_at_the_absolute_budget(
         "stdin",
         StringIO(json.dumps({"workspace": {"current_dir": str(tmp_path)}})),
     )
+    monkeypatch.setattr(statusline_module, "resolve_scope_id", lambda *_args, **_kwargs: "project:test")
     with _serve(SlowDripHandler) as server_url:
         monkeypatch.setenv("POWERCONTEXT_CLAUDE_SERVER_URL", server_url)
         monkeypatch.setenv("POWERCONTEXT_CLAUDE_REQUEST_TIMEOUT_SECONDS", "5.0")
@@ -216,6 +217,7 @@ def test_render_aborts_a_slow_chunked_response_at_the_absolute_budget(
         "stdin",
         StringIO(json.dumps({"workspace": {"current_dir": str(tmp_path)}})),
     )
+    monkeypatch.setattr(statusline_module, "resolve_scope_id", lambda *_args, **_kwargs: "project:test")
     with _serve(ChunkedDripHandler) as server_url:
         monkeypatch.setenv("POWERCONTEXT_CLAUDE_SERVER_URL", server_url)
         monkeypatch.setenv("POWERCONTEXT_CLAUDE_REQUEST_TIMEOUT_SECONDS", "5.0")

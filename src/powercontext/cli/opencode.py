@@ -289,7 +289,11 @@ def _tui_entry_path(entry: object) -> Path | None:
         return None
     try:
         parsed = urlparse(spec)
-        raw = unquote(parsed.path) if parsed.scheme == "file" else spec
+        if parsed.scheme == "file":
+            authority = f"//{parsed.netloc}" if parsed.netloc else ""
+            raw = url2pathname(f"{authority}{parsed.path}")
+        else:
+            raw = spec
         return Path(raw).expanduser().resolve()
     except (OSError, RuntimeError, ValueError):
         return None

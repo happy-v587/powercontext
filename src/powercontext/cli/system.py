@@ -1147,7 +1147,7 @@ def install_claude_code_plugin(
     marketplace_existed = marketplace is not None
 
     plugins = _run_claude_json("plugin", "list")
-    previous_plugin = _claude_plugin(plugins)
+    previous_plugin = _claude_plugin(plugins, scope="user")
     plugin_existed = previous_plugin is not None
     settings_snapshot = _snapshot_claude_settings()
     marketplace_added = False
@@ -1178,7 +1178,7 @@ def install_claude_code_plugin(
         )
         plugin_added = not plugin_existed
         installed = _run_claude_json("plugin", "list")
-        plugin = _require_enabled_claude_plugin(installed)
+        plugin = _require_enabled_claude_plugin(installed, scope="user")
         _configure_claude_plugin(
             plugin=plugin,
             server_url=server_url,
@@ -1642,17 +1642,21 @@ def _describe_claude_marketplace_source(marketplace: dict[str, Any]) -> str:
     return json.dumps(fields, sort_keys=True)
 
 
-def _claude_plugin(value: object) -> dict[str, Any] | None:
+def _claude_plugin(value: object, *, scope: str | None = None) -> dict[str, Any] | None:
     if not isinstance(value, list):
         return None
     for item in value:
-        if isinstance(item, dict) and item.get("id") == f"{PLUGIN_NAME}@{CLAUDE_MARKETPLACE_NAME}":
+        if (
+            isinstance(item, dict)
+            and item.get("id") == f"{PLUGIN_NAME}@{CLAUDE_MARKETPLACE_NAME}"
+            and (scope is None or item.get("scope") == scope)
+        ):
             return cast(dict[str, Any], item)
     return None
 
 
-def _require_enabled_claude_plugin(value: object) -> dict[str, Any]:
-    plugin = _claude_plugin(value)
+def _require_enabled_claude_plugin(value: object, *, scope: str | None = None) -> dict[str, Any]:
+    plugin = _claude_plugin(value, scope=scope)
     if plugin is None or plugin.get("enabled") is not True:
         raise SetupError.claude_plugin_not_enabled()
     return plugin
