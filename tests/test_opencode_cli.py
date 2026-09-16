@@ -700,3 +700,12 @@ def test_configured_plugin_keeps_package_spec_out_of_file_uri_conversion(monkeyp
     monkeypatch.setattr(opencode_cli, "_is_opencode_plugin", is_plugin)
 
     assert opencode_cli._configured_plugin(json.dumps({"plugin": [spec]}))
+
+
+def test_tui_entry_path_decodes_file_uri(tmp_path: Path) -> None:
+    import powercontext.cli.opencode as opencode_cli
+
+    target = tmp_path / "PowerContext Plugin"
+    target.mkdir()
+
+    assert opencode_cli._tui_entry_path(target.as_uri()) == target.resolve()
