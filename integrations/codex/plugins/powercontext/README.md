@@ -25,7 +25,7 @@ The numbers come from the recall-token estimator and are a per-call compression
 proxy, not provider-verified or billable savings. Positive reductions use
 `saved`; negative reductions use `cost`.
 
-The `project-context` skill uses four high-level work operations instead of
+The `powercontext-project-context` skill uses four high-level work operations instead of
 assembling the low-level Handoff lifecycle manually: `create_work_contract`,
 `handoff_current_work`, `acknowledge_handoff`, and `record_task_outcome`.
 When the user says `交接`, `交接当前工作`, `handoff this work`, or an equivalent
