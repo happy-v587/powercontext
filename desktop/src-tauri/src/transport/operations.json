@@ -1,5 +1,5 @@
 {
-  "contractSha256": "0f6befcd87645b83e63ea6393ba57002387302b4e53cf85fc474a218292f4104",
+  "contractSha256": "44194cfe8ab1516f87831d6f1290c74b2bb9fae84dfee42705e86adbc3cf98cd",
   "operations": {
     "get_liveness": {
       "method": "GET",

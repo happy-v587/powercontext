@@ -42,6 +42,11 @@ from powercontext.builtin.inference.models import (
     GenerationResult,
     InferenceUsage,
 )
+from powercontext.builtin.inference.observability import (
+    ProviderObservationSource,
+    current_provider_observer,
+    provider_name,
+)
 from powercontext.builtin.processing_diagnostics import (
     ProcessingDiagnostics,
     ProcessingFailureReason,
@@ -287,6 +292,9 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
         self._receipt_model = model
         self._input_type = input_type
         self._prompt_key = prompt_key
+        self._provider_observations = ProviderObservationSource(
+            provider_name(model.system), "generation", current_provider_observer()
+        )
         try:
             self._input_adapter = TypeAdapter(input_type)
             bounded_settings = model_settings
@@ -354,43 +362,44 @@ class PydanticAIStructuredGenerator(Generic[InputT, OutputT]):
         except (PydanticSerializationError, PydanticUserError, ValidationError, UnicodeError) as error:
             raise PydanticAIConfigurationError("serialize") from error
 
-        try:
-            selection = None if self._prompt_key is None else current_prompt(self._prompt_key)
-            # Agent.override uses task-local state; concurrent Scopes never mutate a shared Agent.
-            override = (
-                self._agent.override(instructions=selection.compiled_instructions)
-                if selection is not None and selection.selection == "artifact"
-                else nullcontext()
-            )
-            with override:
-                result = await asyncio.wait_for(
-                    self._agent.run(
-                        prompt,
-                        deps=value,
-                        usage_limits=UsageLimits(
-                            request_limit=self._limits.max_requests,
-                            output_tokens_limit=self._limits.output_tokens_limit,
-                        ),
-                        metadata=None if selection is None else selection.trace_attributes(),
-                    ),
-                    timeout=self._limits.timeout_seconds,
+        with self._provider_observations.operation():
+            try:
+                selection = None if self._prompt_key is None else current_prompt(self._prompt_key)
+                # Agent.override uses task-local state; concurrent Scopes never mutate a shared Agent.
+                override = (
+                    self._agent.override(instructions=selection.compiled_instructions)
+                    if selection is not None and selection.selection == "artifact"
+                    else nullcontext()
                 )
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            # An exhausted retry budget reports the rule the last response broke, not a generic failure.
-            rejected = _checked_rule(error) if isinstance(error, UnexpectedModelBehavior) else None
-            if rejected is not None:
-                raise rejected from error
-            mapped = _map_error(error, operation="generate", timeout_seconds=self._limits.timeout_seconds)
-            if mapped is None:
+                with override:
+                    result = await asyncio.wait_for(
+                        self._agent.run(
+                            prompt,
+                            deps=value,
+                            usage_limits=UsageLimits(
+                                request_limit=self._limits.max_requests,
+                                output_tokens_limit=self._limits.output_tokens_limit,
+                            ),
+                            metadata=None if selection is None else selection.trace_attributes(),
+                        ),
+                        timeout=self._limits.timeout_seconds,
+                    )
+            except asyncio.CancelledError:
                 raise
-            if mapped is error:
-                raise
-            raise mapped from error
+            except Exception as error:
+                # An exhausted retry budget reports the rule the last response broke, not a generic failure.
+                rejected = _checked_rule(error) if isinstance(error, UnexpectedModelBehavior) else None
+                if rejected is not None:
+                    raise rejected from error
+                mapped = _map_error(error, operation="generate", timeout_seconds=self._limits.timeout_seconds)
+                if mapped is None:
+                    raise
+                if mapped is error:
+                    raise
+                raise mapped from error
 
-        usage = _generation_usage(result.usage)
-        return GenerationResult(output=cast(OutputT, result.output), usage=usage)
+            usage = _generation_usage(result.usage)
+            return GenerationResult(output=cast(OutputT, result.output), usage=usage)
 
 
 class PydanticAIEmbeddingModel:
@@ -415,6 +424,9 @@ class PydanticAIEmbeddingModel:
         if not profile.profile_id.strip() or not profile.model.strip() or not profile.normalization.strip():
             raise PydanticAIConfigurationError("profile-identifiers")
         self._embedder = embedder
+        self._provider_observations = ProviderObservationSource(
+            provider_name(embedder.model.system), "embedding", current_provider_observer()
+        )
         self.profile = profile
         self._batch_size = batch_size
         self._limits = InferenceLimits() if limits is None else limits
@@ -443,32 +455,33 @@ class PydanticAIEmbeddingModel:
         if not texts:
             return EmbeddingResult(vectors=())
 
-        try:
-            result = await asyncio.wait_for(
-                self._embed_batches(texts, input_type=input_type), timeout=self._limits.timeout_seconds
-            )
-        except asyncio.CancelledError:
-            raise
-        except InvalidInferenceOutputError:
-            raise
-        except ValidationError as error:
-            # Malformed provider output is an invalid-output failure, not a
-            # transient availability failure; match the structured mapping.
-            mapped = _map_error(error, operation="embed", timeout_seconds=self._limits.timeout_seconds)
-            if mapped is None:
+        with self._provider_observations.operation():
+            try:
+                result = await asyncio.wait_for(
+                    self._embed_batches(texts, input_type=input_type), timeout=self._limits.timeout_seconds
+                )
+            except asyncio.CancelledError:
                 raise
-            raise mapped from error
-        except ValueError as error:
-            raise InferenceUnavailableError("embed") from error
-        except Exception as error:
-            mapped = _map_error(error, operation="embed", timeout_seconds=self._limits.timeout_seconds)
-            if mapped is None:
+            except InvalidInferenceOutputError:
                 raise
-            if mapped is error:
-                raise
-            raise mapped from error
+            except ValidationError as error:
+                # Malformed provider output is an invalid-output failure, not a
+                # transient availability failure; match the structured mapping.
+                mapped = _map_error(error, operation="embed", timeout_seconds=self._limits.timeout_seconds)
+                if mapped is None:
+                    raise
+                raise mapped from error
+            except ValueError as error:
+                raise InferenceUnavailableError("embed") from error
+            except Exception as error:
+                mapped = _map_error(error, operation="embed", timeout_seconds=self._limits.timeout_seconds)
+                if mapped is None:
+                    raise
+                if mapped is error:
+                    raise
+                raise mapped from error
 
-        return result
+            return result
 
     async def _embed_batches(
         self, texts: tuple[str, ...], *, input_type: Literal["document", "query"]
