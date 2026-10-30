@@ -51,7 +51,7 @@ The historical Server c535d816 protocol qualification below records the specific
 
 ## Compatibility scope
 
-[compatibility.json](src-tauri/src/connections/compatibility.json) preserves every recorded Server source, OpenAPI digest, qualification-wheel digest and operation set. Historical records retain their exact identities and evidence. Ordinary builds require explicitly selecting a record whose tested sources, wheel and contract match the deployment, then checking the connection before business operations become available. A record with another contract digest cannot qualify this bundled contract or extend its operation set. CI fixture evidence is separate from product qualification.
+[compatibility.json](src-tauri/src/connections/compatibility.json) preserves every recorded Server source, OpenAPI digest, qualification-wheel digest and operation set. The bundled contract is qualified by `sqlite-atomic-db9c8d6e-v1` for the eleven operations recorded below. Historical records retain their exact identities and evidence. Ordinary builds require explicitly selecting a record whose tested sources, wheel and contract match the deployment, then checking the connection before business operations become available. A record with another contract digest cannot qualify this bundled contract or extend its operation set. CI fixture evidence is separate from product qualification.
 
 The real Server harness covers SQLite with anonymous loopback, static Bearer, HTTPS with explicit CA/base path, and injected-provider/enforced access. It exercises save/search/exact reads, identity changes, binding revocation, ambiguous writes without replay and Scope pagination. Installed UI checks cover repeated launches preserving the existing editor, late committed-save responses preserving a new Scope draft, explicit connection/Scope selection, clipboard copies, connection isolation, draft cancellation, byte limits and independent Server survival after Desktop exit.
 
@@ -60,6 +60,48 @@ Selecting a compatibility profile does not attest the remote binary identity. Ex
 <a id="current-server-protocol-qualification"></a>
 
 ### Server protocol qualification records
+
+#### Server db9c8d6e protocol qualification
+
+`sqlite-atomic-db9c8d6e-v1` records Server sources at
+`db9c8d6edc49166504b39e0d8038dd0082368dee` for OpenAPI digest
+`e2a8b64371385e857a3bc44a6d83e09b909a72c9fead64964723ed30fd06226c`.
+The wheel is `powercontext-1.4.2.dev90+gdb9c8d6ed-py3-none-any.whl`, SHA-256
+`788a157d27765cc33c16357617d217096bcb3bf056c5f1ecb512e6c14d209e3c`, built from that clean source commit.
+All 625 packaged source files in `powercontext/` and `powercontext_service_bootstrap/`
+match that commit byte for byte; generated version metadata is excluded. The sorted source
+manifest digest is `b962c8c852b5ef31922d6d19cad621009841a47ac288940d4794746a297f52c6`
+(one `wheel/path sha256` line per file, with a final newline). OpenAPI, project configuration
+and the lock file also match the recorded sources.
+
+On 2026-10-30, macOS 26.5.2 ARM64 with Python 3.12.13 and Rust 1.95.0 ran the existing
+`desktop/tests/real_server.py` harness against independent SQLite Servers loaded from this
+wheel. Anonymous loopback, static Bearer, HTTPS with an explicit CA/base path, and an injected
+provider with enforced access all passed. The unchanged native probe exercised discovery,
+health, Principal, Scope selection and pagination, Atomic Memory save/search/exact revision
+reads, identity changes, same-identity revocation, committed writes with lost responses without
+replay, and Server survival after client exit. The candidate fixture supplies the exact
+source/contract/wheel identity; the product record includes only the eleven exercised operations.
+The harness reports `desktopWorkingTreeDirty=false`.
+
+Reproduce from the recorded commit with an empty wheel output directory:
+
+```sh
+uv build --wheel --out-dir desktop/.artifacts/server-wheel
+cargo +1.95.0 build --locked --manifest-path desktop/src-tauri/Cargo.toml --example server_probe
+uv run --frozen python desktop/tests/fixture_qualification.py --server-commit db9c8d6edc49166504b39e0d8038dd0082368dee
+uv run --frozen python desktop/tests/real_server.py
+```
+
+Local evidence is in ignored `desktop/.artifacts/real-server.json` and
+`desktop/.artifacts/qualification-wheel-identity.json`. This qualifies the listed protocol
+behavior. It does not establish native Windows/Intel execution, installed GUI workflows,
+persistent credentials, signing or full release-upgrade acceptance. Every historical record
+retains its original source, contract, artifact and operation identities.
+
+本记录绑定上述源码、契约和 wheel。原生探针通过四种真实 SQLite／HTTP 连接模式，
+覆盖所列十一项操作、身份变化、撤权及响应丢失后的不确定写入。该验证不替代 Windows／Intel、
+安装界面、原生凭据持久化、签名或完整升级验收。历史资格记录保留原有身份与证据。
 
 #### Server 15c9d932 protocol qualification
 
