@@ -2057,7 +2057,13 @@ async def plan_access_ownership(payload: PlanAccessOwnershipRequest, request: Re
             *_binding_administrative_check(None, deployment_id=access.deployment_id),
             context=_access_audit_context(PLAN_ACCESS_OWNERSHIP.operation_id),
         )
-    plan = await plan_ownership_migration(application, access, scope_ids, background_principal=background)
+    plan = await plan_ownership_migration(
+        application,
+        access,
+        scope_ids,
+        background_principal=background,
+        context=_access_audit_context(PLAN_ACCESS_OWNERSHIP.operation_id),
+    )
     return AccessOwnershipPlan(
         mode=TransportAccessControlMode(request.app.state.access_mode),
         scopes=[
@@ -2098,6 +2104,7 @@ async def apply_access_ownership(payload: ApplyAccessOwnershipRequest, request: 
         owner=_access_principal(payload.owner),
         dry_run=payload.dry_run,
         owner_recovery=request.app.state.owner_recovery,
+        context=_access_audit_context(APPLY_ACCESS_OWNERSHIP.operation_id),
     )
     return AccessOwnershipApplyResult(
         dry_run=payload.dry_run,

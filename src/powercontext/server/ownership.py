@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
@@ -120,7 +120,11 @@ class OwnershipMigrationResult:
     conflicts: tuple[OwnershipDisposition, ...]
 
 
-def migration_context(operation: str, *, transport: str = "http") -> AccessAuditContext:
+def migration_context(
+    operation: str, *, transport: str = "http", context: AccessAuditContext | None = None
+) -> AccessAuditContext:
+    if context is not None:
+        return replace(context, operation=operation)
     return AccessAuditContext(transport=transport, operation=operation)
 
 
@@ -139,6 +143,7 @@ async def plan_ownership_migration(
     *,
     background_principal: PrincipalRef | None = None,
     transport: str = "http",
+    context: AccessAuditContext | None = None,
 ) -> OwnershipPlan:
     """Inventory missing Artifact owners and Candidate attestations for Scopes.
 
@@ -161,7 +166,8 @@ async def plan_ownership_migration(
         )
     background: list[BackgroundPermissionGap] = []
     if background_principal is not None and access is not None:
-        context = migration_context(PLAN_OPERATION, transport=transport)
+        # The checked background Principal does not inherit the administrator's groups.
+        context = replace(migration_context(PLAN_OPERATION, transport=transport, context=context), subject_groups=())
         for scope_id in selected:
             decision = await access.check(
                 background_principal,
@@ -207,6 +213,7 @@ async def apply_ownership_migration(
     dry_run: bool = False,
     transport: str = "http",
     owner_recovery: OwnerRecovery | None = None,
+    context: AccessAuditContext | None = None,
 ) -> OwnershipMigrationResult:
     """Backfill the relations missing per plan, attributed to ``owner``.
 
@@ -216,7 +223,7 @@ async def apply_ownership_migration(
     """
 
     _validate_migration_owner(owner)
-    context = migration_context(MIGRATION_OPERATION, transport=transport)
+    context = migration_context(MIGRATION_OPERATION, transport=transport, context=context)
     items: list[ArtifactOwnershipGap | CandidateOwnershipGap] = []
     conflicts: list[OwnershipDisposition] = []
     for scope_id in dict.fromkeys(scope_ids):

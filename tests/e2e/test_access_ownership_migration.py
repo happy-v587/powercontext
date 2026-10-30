@@ -726,6 +726,93 @@ def test_offline_cli_migration_repairs_the_switch(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("store", ["local", "external", "external-retry"])
+def test_migration_audit_preserves_request_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: str) -> None:
+    from powercontext.builtin.records import ArtifactWrite
+    from powercontext.server.authz import AccessUnavailableError
+
+    actor = PrincipalRef(type="service", id="trusted-delegate")
+    owner = PrincipalRef(type="user", id="bob")
+
+    class DelegatedAuthentication(_Authentication):
+        async def authenticate(self, request):
+            authentication = await super().authenticate(request)
+            return AuthenticationResult(subject=authentication.subject, actor=actor)
+
+    async def scenario() -> None:
+        database = SQLiteConfig(url=f"sqlite+aiosqlite:///{(tmp_path / 'audit-domain.db').as_posix()}")
+        relationships = (
+            database
+            if store == "local"
+            else SQLiteConfig(url=f"sqlite+aiosqlite:///{(tmp_path / 'audit-access.db').as_posix()}")
+        )
+        seed = create_server_app(settings=_settings(database, "disabled"), scheduler_path=tmp_path / "scheduler.db")
+        async with (
+            seed.router.lifespan_context(seed),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=seed), base_url="http://test") as client,
+        ):
+            scope = checked(
+                await client.post(
+                    "/v1/scopes",
+                    json={"title": "Audit context", "summary": "Legacy ownership", "idempotency_key": "audit"},
+                ),
+                201,
+            )["scope_id"]
+            await seed.state.application.records.for_scope(scope).create_artifact(
+                "profile", ArtifactWrite(content={"content": "# Legacy profile"})
+            )
+        async with open_builtin_access_control(
+            relationships, bootstrap_administrators=(ADMIN,), deployment_id=DEPLOYMENT
+        ) as access:
+            app = create_server_app(
+                settings=_settings(database, "enforced"),
+                authentication_provider=DelegatedAuthentication(),
+                access_control=access,
+                scheduler_path=tmp_path / "scheduler.db",
+            )
+            async with (
+                app.router.lifespan_context(app),
+                httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+            ):
+                resource = ResourceRef.artifact(scope, family="profile", artifact_id="profile")
+                payload = {"scope_ids": [scope], "owner": {"type": owner.type, "id": owner.id}}
+                original_request_id = None
+                if store == "external-retry":
+
+                    async def unavailable(event):
+                        raise AccessUnavailableError("external_audit_unavailable")
+
+                    with monkeypatch.context() as patch:
+                        patch.setattr(access.audit, "append_audit_once", unavailable)
+                        failed = await client.post("/v1/access/ownership/apply", json=payload)
+                        assert failed.status_code == 503, failed.text
+                        original_request_id = failed.headers["X-PowerContext-Request-ID"]
+                        assert len(await app.state.owner_recovery.pending(scope_id=scope)) == 1
+                response = await client.post("/v1/access/ownership/apply", json=payload)
+                assert response.status_code == 200, response.text
+                request_id = original_request_id or response.headers["X-PowerContext-Request-ID"]
+                events = await access.audit.list_audit(resource=resource, limit=100)
+                owners = [event for event in events if event.reason_code == "artifact-owner-established"]
+                assert len(owners) == 1
+                assert owners[0].principal == owner
+                assert owners[0].request_id == request_id
+                assert owners[0].actor == actor
+                assert owners[0].transport == "http"
+                assert owners[0].operation == "access.ownership.apply"
+                preview = await client.post(
+                    "/v1/access/ownership/plan",
+                    json={"scope_ids": [scope], "background_principal": payload["owner"]},
+                )
+                assert preview.status_code == 200, preview.text
+                scope_events = await access.audit.list_audit(resource=ResourceRef.scope(scope), limit=100)
+                planned = [event for event in scope_events if event.operation == "access.ownership.plan"]
+                assert planned
+                assert all(event.request_id == preview.headers["X-PowerContext-Request-ID"] for event in planned)
+                assert all(event.actor == actor for event in planned)
+
+    asyncio.run(scenario())
+
+
 def test_apply_reports_conflicting_ownership_without_failing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         database = SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")

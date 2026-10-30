@@ -652,7 +652,7 @@ async def _access_ownership_maintenance(
         access = await resources.enter_async_context(
             open_builtin_access_control(settings.database, deployment_id=settings.access.deployment_id)
         )
-        runtime = await resources.enter_async_context(open_builtin_runtime(config))
+        runtime = await resources.enter_async_context(open_builtin_runtime(config, dispatch_processing=False))
         if runtime.scopes is None:
             raise typer.BadParameter("ownership migration requires a runtime with Scope support")  # noqa: TRY003
         recovery = OwnerRecovery(runtime.primary_database, access)
